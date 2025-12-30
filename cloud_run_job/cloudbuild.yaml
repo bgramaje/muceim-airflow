@@ -1,0 +1,18 @@
+steps:
+  # Construir la imagen Docker
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/insert-ducklake:latest', '.']
+  
+  # Subir la imagen a Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/insert-ducklake:latest']
+
+# Imágenes a crear
+images:
+  - 'gcr.io/$PROJECT_ID/insert-ducklake:latest'
+
+# Opciones
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+

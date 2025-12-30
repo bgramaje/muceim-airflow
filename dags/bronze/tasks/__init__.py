@@ -1,0 +1,83 @@
+"""
+Bronze Layer Airflow Tasks Package
+"""
+
+from .mitma.mitma_od import (
+    BRONZE_mitma_od_urls,
+    BRONZE_mitma_od_insert,
+)
+from .mitma.mitma_people_day import (
+    BRONZE_mitma_people_day_urls,
+    BRONZE_mitma_people_day_insert,
+)
+from .mitma.mitma_overnights import (
+    BRONZE_mitma_overnight_stay_urls,
+    BRONZE_mitma_overnight_stay_insert,
+)
+from .mitma.mitma_zonification import (
+    BRONZE_mitma_zonification_urls,
+    BRONZE_mitma_zonification,
+)
+from .ine.ine_municipios import (
+    BRONZE_ine_municipios_urls,
+    BRONZE_ine_municipios_create_table,
+    BRONZE_ine_municipios_filter_urls,
+    BRONZE_ine_municipios_insert,
+)
+from .ine.ine_empresas import (
+    BRONZE_ine_empresas_municipio_urls,
+    BRONZE_ine_empresas_municipio_create_table,
+    BRONZE_ine_empresas_municipio_filter_urls,
+    BRONZE_ine_empresas_municipio_insert,
+)
+from .ine.ine_poblacion import (
+    BRONZE_ine_poblacion_municipio_urls,
+    BRONZE_ine_poblacion_municipio_create_table,
+    BRONZE_ine_poblacion_municipio_filter_urls,
+    BRONZE_ine_poblacion_municipio_insert,
+)
+from .ine.ine_renta import (
+    BRONZE_ine_renta_urls,
+    BRONZE_ine_renta_create_table,
+    BRONZE_ine_renta_filter_urls,
+    BRONZE_ine_renta_insert,
+)
+from .ine.mitma_ine_relations import (
+    BRONZE_mitma_ine_relations_urls,
+    BRONZE_mitma_ine_relations_create_table,
+    BRONZE_mitma_ine_relations_filter_urls,
+    BRONZE_mitma_ine_relations_insert,
+)
+from .holidays.spanish_holidays import BRONZE_load_spanish_holidays
+
+__all__ = [
+    "BRONZE_mitma_od_urls",
+    "BRONZE_mitma_od_insert",
+    "BRONZE_mitma_people_day_urls",
+    "BRONZE_mitma_people_day_insert",
+    "BRONZE_mitma_overnight_stay_urls",
+    "BRONZE_mitma_overnight_stay_insert",
+    "BRONZE_mitma_zonification_urls",
+    "BRONZE_mitma_zonification",
+    "BRONZE_ine_municipios_urls",
+    "BRONZE_ine_municipios_create_table",
+    "BRONZE_ine_municipios_filter_urls",
+    "BRONZE_ine_municipios_insert",
+    "BRONZE_ine_empresas_municipio_urls",
+    "BRONZE_ine_empresas_municipio_create_table",
+    "BRONZE_ine_empresas_municipio_filter_urls",
+    "BRONZE_ine_empresas_municipio_insert",
+    "BRONZE_ine_poblacion_municipio_urls",
+    "BRONZE_ine_poblacion_municipio_create_table",
+    "BRONZE_ine_poblacion_municipio_filter_urls",
+    "BRONZE_ine_poblacion_municipio_insert",
+    "BRONZE_ine_renta_urls",
+    "BRONZE_ine_renta_create_table",
+    "BRONZE_ine_renta_filter_urls",
+    "BRONZE_ine_renta_insert",
+    "BRONZE_mitma_ine_relations_urls",
+    "BRONZE_mitma_ine_relations_create_table",
+    "BRONZE_mitma_ine_relations_filter_urls",
+    "BRONZE_mitma_ine_relations_insert",
+    "BRONZE_load_spanish_holidays",
+]
