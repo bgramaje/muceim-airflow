@@ -1,5 +1,5 @@
 FROM python:3.11-slim
-
+# run
 # Instalar dependencias del sistema necesarias para DuckDB
 RUN apt-get update && apt-get install -y \
     build-essential \
