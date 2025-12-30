@@ -54,7 +54,7 @@ def BRONZE_mitma_od_insert(url: str, zone_type: str = 'distritos'):
     After successful merge, updates table statistics for optimization.
     """
     from utils.gcp import execute_cloud_run_job_merge_csv
-    from utils import get_ducklake_connection
+    from utils.utils import get_ducklake_connection
 
     dataset = 'od'
     table_name = f'mitma_{dataset}_{zone_type}'

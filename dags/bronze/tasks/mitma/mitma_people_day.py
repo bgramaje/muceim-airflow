@@ -50,7 +50,7 @@ def BRONZE_mitma_people_day_insert(url: str, zone_type: str = 'distritos'):
     Creates optimization indexes after successful insert for Silver layer queries.
     """
     from bronze.utils import merge_from_csv
-    from utils import get_ducklake_connection
+    from utils.utils import get_ducklake_connection
 
     dataset = 'people_day'
     table_name = f'mitma_{dataset}_{zone_type}'

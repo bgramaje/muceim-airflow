@@ -16,7 +16,7 @@ def BRONZE_load_spanish_holidays(year: int = 2023):
     Returns:
     - Dict with task status and info
     """
-    from utils import get_ducklake_connection
+    from utils.utils import get_ducklake_connection
 
     print("[TASK] Loading Spanish public holidays into DuckDB table")
 

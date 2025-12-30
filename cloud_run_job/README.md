@@ -14,9 +14,11 @@ cloud_run_job/
 
 ## Despliegue
 
-### ⚠️ IMPORTANTE: Crear repositorio de Artifact Registry primero
+### ⚠️ IMPORTANTE: Crear repositorio de Artifact Registry y dar permisos
 
-Antes de ejecutar el build, necesitas crear el repositorio de Artifact Registry:
+Antes de ejecutar el build, necesitas:
+
+#### 1. Crear el repositorio de Artifact Registry
 
 1. Ve a **Artifact Registry** > **Repositories**: https://console.cloud.google.com/artifacts
 2. Haz clic en **CREATE REPOSITORY**
@@ -26,6 +28,24 @@ Antes de ejecutar el build, necesitas crear el repositorio de Artifact Registry:
    - **Mode**: Standard
    - **Region**: `europe-southwest1` (Madrid)
 4. Haz clic en **CREATE**
+
+#### 2. Dar permisos a Cloud Build Service Account
+
+La Service Account de Cloud Build necesita permisos para subir imágenes. Hazlo desde la interfaz:
+
+1. Ve al repositorio que acabas de crear: `cloud-run-source-deploy`
+2. Haz clic en la pestaña **PERMISSIONS**
+3. Haz clic en **ADD PRINCIPAL**
+4. En **New principals**, busca: `PROJECT_NUMBER@cloudbuild.gserviceaccount.com`
+   - Para encontrar tu PROJECT_NUMBER: Ve a **IAM & Admin** > **Settings** y copia el "Project number"
+   - Ejemplo: `123456789012@cloudbuild.gserviceaccount.com`
+5. En **Role**, selecciona: **Artifact Registry Writer**
+6. Haz clic en **SAVE**
+
+**Alternativa rápida**: Si no encuentras el PROJECT_NUMBER, puedes dar permisos a nivel de proyecto:
+- Ve a **IAM & Admin** > **IAM**
+- Busca la Service Account de Cloud Build (formato: `PROJECT_NUMBER@cloudbuild.gserviceaccount.com`)
+- Agrega el rol: **Artifact Registry Writer** a nivel de proyecto
 
 **Alternativa**: Si prefieres usar otro nombre de repositorio, actualiza `cloudbuild.yaml` y reemplaza `cloud-run-source-deploy` con tu nombre.
 

@@ -6,7 +6,7 @@ from airflow.sdk import task # type: ignore
 # Add parent directory to path to import utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import get_ducklake_connection
+from utils.utils import get_ducklake_connection
 
 @task
 def SILVER_mitma_ine_mapping():

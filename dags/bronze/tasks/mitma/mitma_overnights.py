@@ -50,7 +50,7 @@ def BRONZE_mitma_overnight_stay_insert(url: str, zone_type: str = 'distritos'):
     Creates optimization indexes after successful insert for Silver layer queries.
     """
     from bronze.utils import merge_from_csv
-    from utils import get_ducklake_connection
+    from utils.utils import get_ducklake_connection
 
     dataset = 'overnight_stay'
     table_name = f'mitma_{dataset}_{zone_type}'

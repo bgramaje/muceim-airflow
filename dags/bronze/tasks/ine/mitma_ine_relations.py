@@ -56,7 +56,7 @@ def BRONZE_mitma_ine_relations_insert(url: str):
     Creates optimization indexes after successful insert for Silver layer queries.
     """
     from bronze.utils import merge_from_csv
-    from utils import get_ducklake_connection
+    from utils.utils import get_ducklake_connection
 
     print(f"[TASK] Processing URL: {url}")
     

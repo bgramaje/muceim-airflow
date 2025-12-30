@@ -17,7 +17,7 @@ import sys
 
 # Ensure we can import from parent directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils import get_ducklake_connection
+from utils.utils import get_ducklake_connection
 
 LAKE_LAYER = 'bronze'
 

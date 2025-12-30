@@ -69,7 +69,7 @@ def BRONZE_ine_renta_insert(url: str):
     Creates optimization indexes after successful insert for Silver layer queries.
     """
     from bronze.utils import merge_from_json
-    from utils import get_ducklake_connection
+    from utils.utils import get_ducklake_connection
 
     print(f"[TASK] Processing URL: {url}")
     

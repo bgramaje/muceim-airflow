@@ -52,11 +52,10 @@ gcloud projects add-iam-policy-binding PROJECT_ID \
 """
 
 from typing import Dict
-from airflow.providers.google.cloud.operators.cloud_run import CloudRunExecuteJobOperator  # type: ignore
 from airflow.models import Variable  # type: ignore
-from airflow import DAG
-from airflow.utils.context import Context
-
+from airflow.providers.google.cloud.hooks.cloud_run import CloudRunHook  # type: ignore
+from google.cloud import run_v2  # type: ignore
+from airflow.providers.google.cloud.hooks.base import GoogleBaseHook  # type: ignore
 
 def execute_cloud_run_job_merge_csv(
     table_name: str,
@@ -115,41 +114,73 @@ def execute_cloud_run_job_merge_csv(
         )
     
     # Variables de entorno para el Job
-    env_vars = {
-        'TABLE_NAME': table_name,
-        'URL': url,
-        'ZONE_TYPE': zone_type
+    # Cloud Run Jobs API expects environment variables in overrides.container_overrides[0].env
+    env_vars_list = [
+        {'name': 'TABLE_NAME', 'value': table_name},
+        {'name': 'URL', 'value': url},
+        {'name': 'ZONE_TYPE', 'value': zone_type}
+    ]
+    
+    overrides = {
+        'container_overrides': [{
+            'env': env_vars_list
+        }]
     }
     
     print(f"[CLOUD_RUN_JOB] Executing job: {job_name}")
     print(f"[CLOUD_RUN_JOB] Region: {region}, Project: {project_id}")
-    print(f"[CLOUD_RUN_JOB] Environment variables: {env_vars}")
-    
-    # Crear y ejecutar el operador
-    job_operator = CloudRunExecuteJobOperator(
-        task_id='cloud_run_job_merge_csv',
-        job_name=job_name,
-        region=region,
-        project_id=project_id,
-        gcp_conn_id=gcp_conn_id,
-        env_vars=env_vars
-    )
+    print(f"[CLOUD_RUN_JOB] Environment variables: {env_vars_list}")
     
     try:
-        # Ejecutar el operador
-        result = job_operator.execute(context=context or {})
+        # Crear el cliente de Cloud Run Jobs directamente
+        # Usamos GoogleBaseHook para obtener las credenciales
+        hook = GoogleBaseHook(gcp_conn_id=gcp_conn_id)
+        credentials = hook.get_credentials()
         
-        print(f"[CLOUD_RUN_JOB] ✅ Job completed successfully")
+        # Crear el cliente de Jobs
+        client = run_v2.JobsClient(credentials=credentials)
+        
+        # Construir el nombre completo del job
+        job_path = f"projects/{project_id}/locations/{region}/jobs/{job_name}"
+        
+        # Crear el request para ejecutar el job con overrides
+        request = run_v2.RunJobRequest(
+            name=job_path,
+            overrides=run_v2.RunJobRequest.Overrides(
+                container_overrides=[
+                    run_v2.RunJobRequest.Overrides.ContainerOverride(
+                        env=[
+                            run_v2.EnvVar(name=env['name'], value=env['value'])
+                            for env in env_vars_list
+                        ]
+                    )
+                ]
+            )
+        )
+        
+        # Ejecutar el job
+        print(f"[CLOUD_RUN_JOB] Executing job at: {job_path}")
+        operation = client.run_job(request=request)
+        
+        # El job se ejecuta de forma asíncrona
+        execution_name = operation.name if hasattr(operation, 'name') else None
+        print(f"[CLOUD_RUN_JOB] ✅ Job execution started")
+        print(f"[CLOUD_RUN_JOB] Execution: {execution_name}")
+        
+        # Nota: El job se ejecutará y terminará automáticamente
+        # No esperamos aquí porque es un job que se ejecuta de forma asíncrona
         
         return {
             'status': 'success',
             'message': f'Data merged successfully into bronze_{table_name}',
             'table_name': f'bronze_{table_name}',
             'url': url,
-            'job_result': result
+            'execution_name': execution_name
         }
         
     except Exception as e:
         error_msg = f"Failed to execute Cloud Run Job: {str(e)}"
         print(f"[CLOUD_RUN_JOB] ❌ {error_msg}")
+        import traceback
+        print(f"[CLOUD_RUN_JOB] Traceback: {traceback.format_exc()}")
         raise RuntimeError(error_msg) from e

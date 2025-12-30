@@ -1,37 +1,5 @@
-# This file allows you to configure Airflow Connections, Pools, and Variables in a single place for local development only.
-# NOTE: json dicts can be added to the conn_extra field as yaml key value pairs. See the example below.
-
-# For more information, refer to our docs: https://www.astronomer.io/docs/astro/cli/develop-project#configure-airflow_settingsyaml-local-development-only
-# For questions, reach out to: https://support.astronomer.io
-# For issues create an issue ticket here: https://github.com/astronomer/astro-cli/issues
-
 airflow:
   pools:
     - pool_name: od_pool
       pool_slot: 15
-      pool_description: Pool para limitar tareas de OD
-  
-  variables:
-    # Google Cloud Run Job configuration
-    - key: GCP_CLOUD_RUN_JOB_NAME
-      val: insert-ducklake
-    - key: GCP_CLOUD_RUN_REGION
-      val: europe-southwest1  # Madrid, España - Región más cercana para España
-      # Otras opciones cercanas a España:
-      # - europe-west1 (Bélgica)
-      # - europe-west4 (Países Bajos)
-      # - europe-west6 (Zúrich, Suiza)
-    - key: GCP_PROJECT_ID
-      val: muceim-bigdata
-    # Opcional: solo cambia si usas un connection_id diferente
-    # - key: GCP_CONNECTION_ID
-    #   val: google_cloud_default
-  
-  connections:
-    - conn_id: google_cloud_default
-      conn_type: google_cloud_platform
-    
-      extra:
-        project: muceim-bigdata
-        key_path: /Users/bgramaje/Desktop/muceim-bigdata-gcp-key.json
-        scope: "https://www.googleapis.com/auth/cloud-platform"
+      pool_description: od_pool

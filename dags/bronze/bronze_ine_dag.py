@@ -15,7 +15,7 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 # Import infrastructure setup TaskGroup
 from misc.infra import tg_infra
 
-from utils import get_default_pool_slots
+from utils.utils import get_default_pool_slots
 
 # Import Bronze INE tasks
 from bronze.tasks.ine import (

@@ -38,7 +38,7 @@ def BRONZE_mitma_zonification(zone_type: str = 'distritos'):
     - Dict with task status and info
     """
     from bronze.utils import load_zonificacion
-    from utils import get_ducklake_connection
+    from utils.utils import get_ducklake_connection
 
     print(f"[TASK] Starting zonification load for {zone_type}")
     

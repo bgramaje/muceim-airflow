@@ -14,7 +14,7 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 
 from misc.infra import tg_infra
 
-from utils import get_default_pool_slots
+from utils.utils import get_default_pool_slots
 
 from bronze.tasks.mitma import (
     BRONZE_mitma_od_urls,
