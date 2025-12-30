@@ -14,7 +14,24 @@ cloud_run_job/
 
 ## Despliegue
 
-Tienes dos opciones: usar la interfaz web (más fácil, sin CLI) o usar gcloud CLI.
+### ⚠️ IMPORTANTE: Crear repositorio de Artifact Registry primero
+
+Antes de ejecutar el build, necesitas crear el repositorio de Artifact Registry:
+
+1. Ve a **Artifact Registry** > **Repositories**: https://console.cloud.google.com/artifacts
+2. Haz clic en **CREATE REPOSITORY**
+3. Configuración:
+   - **Name**: `cloud-run-source-deploy`
+   - **Format**: Docker
+   - **Mode**: Standard
+   - **Region**: `europe-southwest1` (Madrid)
+4. Haz clic en **CREATE**
+
+**Alternativa**: Si prefieres usar otro nombre de repositorio, actualiza `cloudbuild.yaml` y reemplaza `cloud-run-source-deploy` con tu nombre.
+
+---
+
+Tienes dos opciones para construir la imagen: usar la interfaz web (más fácil, sin CLI) o usar gcloud CLI.
 
 ### Opción A: Desde la Interfaz Web (Recomendado - No requiere CLI)
 
@@ -38,16 +55,7 @@ Primero, necesitas tener el código en un repositorio accesible:
    - **Location**: `cloud_run_job/cloudbuild.yaml` (crea este archivo, ver abajo)
 4. Haz clic en **CREATE**
 
-**Crear `cloud_run_job/cloudbuild.yaml`:**
-```yaml
-steps:
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/insert-ducklake:latest', '.']
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/insert-ducklake:latest']
-images:
-  - 'gcr.io/$PROJECT_ID/insert-ducklake:latest'
-```
+**Nota**: El archivo `cloud_run_job/cloudbuild.yaml` ya está creado y configurado para usar Artifact Registry.
 
 5. Haz push a tu repositorio para activar el build
 
@@ -58,7 +66,7 @@ images:
 3. Configuración:
    - **Job name**: `insert-ducklake`
    - **Region**: `europe-southwest1` (Madrid)
-   - **Container image URL**: `gcr.io/muceim-bigdata/insert-ducklake:latest`
+   - **Container image URL**: `europe-southwest1-docker.pkg.dev/muceim-bigdata/cloud-run-source-deploy/insert-ducklake:latest`
    - **CPU**: 2 (o más según necesites)
    - **Memory**: 4Gi (o más según necesites)
    - **Timeout**: 3600s (1 hora) o más

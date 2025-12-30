@@ -2,15 +2,15 @@ steps:
   # Construir la imagen Docker desde el directorio cloud_run_job
   - name: 'gcr.io/cloud-builders/docker'
     dir: 'cloud_run_job'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/insert-ducklake:latest', '.']
+    args: ['build', '-t', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest', '.']
   
-  # Subir la imagen a Container Registry
+  # Subir la imagen a Artifact Registry (europe-southwest1)
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/insert-ducklake:latest']
+    args: ['push', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest']
 
 # Imágenes a crear
 images:
-  - 'gcr.io/$PROJECT_ID/insert-ducklake:latest'
+  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest'
 
 # Opciones
 options:
