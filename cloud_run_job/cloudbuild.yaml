@@ -1,6 +1,7 @@
 steps:
-  # Construir la imagen Docker
+  # Construir la imagen Docker desde el directorio cloud_run_job
   - name: 'gcr.io/cloud-builders/docker'
+    dir: 'cloud_run_job'
     args: ['build', '-t', 'gcr.io/$PROJECT_ID/insert-ducklake:latest', '.']
   
   # Subir la imagen a Container Registry
@@ -15,4 +16,3 @@ images:
 options:
   machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
-
