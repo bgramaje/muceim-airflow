@@ -61,21 +61,6 @@ def BRONZE_mitma_od_insert(url: str, zone_type: str = 'distritos'):
     full_table_name = f'bronze_{table_name}'
     print(f"[TASK] Processing URL: {url} into {table_name} via Google Cloud Run Job")
 
-    # Execute Cloud Run Job to download and merge CSV
     result = execute_cloud_run_job_merge_csv(table_name, url, zone_type)
     
-    print(f"[TASK] Cloud Run Job completed: {result.get('message', 'Success')}")
-
-    # Update statistics for query optimization (DuckDB alternative to indexes)
-    # ANALYZE helps the query optimizer make better decisions for:
-    # - Filtering on origen/destino columns
-    # - JOIN operations
-    # - SELECT DISTINCT operations
-    con = get_ducklake_connection()
-    try:
-        con.execute(f"ANALYZE {full_table_name};")
-        print(f"  ✅ Updated statistics for {full_table_name} (query optimization)")
-    except Exception as analyze_error:
-        print(f"  ⚠️ Could not analyze table (non-critical): {analyze_error}")
-
     return {'status': 'success', 'url': url, 'cloud_run_job_result': result}

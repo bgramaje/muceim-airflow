@@ -55,7 +55,6 @@ from typing import Dict
 from airflow.models import Variable  # type: ignore
 from airflow.providers.google.cloud.hooks.cloud_run import CloudRunHook  # type: ignore
 from google.cloud import run_v2  # type: ignore
-from airflow.providers.google.cloud.hooks.base import GoogleBaseHook  # type: ignore
 
 def execute_cloud_run_job_merge_csv(
     table_name: str,
@@ -113,28 +112,21 @@ def execute_cloud_run_job_merge_csv(
             "Please set it to your GCP project ID"
         )
     
-    # Variables de entorno para el Job
-    # Cloud Run Jobs API expects environment variables in overrides.container_overrides[0].env
     env_vars_list = [
         {'name': 'TABLE_NAME', 'value': table_name},
         {'name': 'URL', 'value': url},
         {'name': 'ZONE_TYPE', 'value': zone_type}
     ]
     
-    overrides = {
-        'container_overrides': [{
-            'env': env_vars_list
-        }]
-    }
-    
     print(f"[CLOUD_RUN_JOB] Executing job: {job_name}")
     print(f"[CLOUD_RUN_JOB] Region: {region}, Project: {project_id}")
     print(f"[CLOUD_RUN_JOB] Environment variables: {env_vars_list}")
     
     try:
-        # Crear el cliente de Cloud Run Jobs directamente
-        # Usamos GoogleBaseHook para obtener las credenciales
-        hook = GoogleBaseHook(gcp_conn_id=gcp_conn_id)
+        # Usar CloudRunHook para obtener las credenciales y el cliente
+        hook = CloudRunHook(gcp_conn_id=gcp_conn_id)
+        
+        # Obtener las credenciales desde el hook
         credentials = hook.get_credentials()
         
         # Crear el cliente de Jobs

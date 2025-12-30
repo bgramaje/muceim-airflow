@@ -11,6 +11,9 @@ El job descarga el CSV usando el ancho de banda de GCP y lo inserta en DuckDB.
 
 import os
 import sys
+import tempfile
+import urllib.request
+import urllib.error
 import duckdb
 
 
@@ -64,7 +67,11 @@ def get_duckdb_connection():
     con.execute(f"SET s3_secret_access_key='{RUSTFS_PASSWORD}';")
     con.execute(f"SET s3_use_ssl={RUSTFS_SSL};")
     con.execute("SET s3_url_style='path';")
-    con.execute("SET force_download=false;")  # Stream en vez de descargar todo
+    
+    # Configurar httpfs para manejar URLs HTTP/HTTPS con mejor manejo de errores
+    con.execute("SET httpfs_allow_http=true;")
+    con.execute("SET httpfs_retry_wait_ms=2000;")
+    con.execute("SET httpfs_retry_count=5;")
     
     # Optimizaciones de memoria
     con.execute("SET memory_limit='4GB';")
@@ -111,17 +118,55 @@ def _build_merge_condition(columns):
     ])
 
 
-def _get_csv_source_query(url):
-    """Genera la subconsulta SELECT para leer el CSV."""
+def _download_csv_to_temp(url):
+    """
+    Descarga el CSV desde la URL a un archivo temporal.
+    Esto evita problemas con HEAD requests que algunos servidores no soportan.
+    """
+    print(f"[CLOUD_RUN_JOB] Downloading CSV from {url}...")
+    try:
+        # Crear archivo temporal
+        temp_file = tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.csv.gz')
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        # Descargar usando GET request (no HEAD)
+        req = urllib.request.Request(url)
+        req.add_header('User-Agent', 'Mozilla/5.0 (Cloud Run Job)')
+        
+        with urllib.request.urlopen(req, timeout=300) as response:
+            with open(temp_path, 'wb') as f:
+                # Descargar en chunks para manejar archivos grandes
+                chunk_size = 8192
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+        
+        print(f"[CLOUD_RUN_JOB] ✅ Downloaded CSV to {temp_path}")
+        return temp_path
+    except urllib.error.HTTPError as e:
+        raise Exception(f"HTTP Error: Request returned HTTP {e.code} for HTTP GET to '{url}': {e.reason}")
+    except Exception as e:
+        raise Exception(f"Error downloading CSV from {url}: {str(e)}")
+
+
+def _get_csv_source_query(file_path, original_url):
+    """Genera la subconsulta SELECT para leer el CSV desde archivo local."""
+    # Extraer nombre de archivo de la URL original para source_file
+    filename = os.path.basename(original_url)
+    
     return f"""
         SELECT 
             * EXCLUDE (filename),
             CURRENT_TIMESTAMP AS loaded_at,
-            filename AS source_file
+            '{filename}' AS source_file
         FROM read_csv(
-            ['{url}'],
+            ['{file_path}'],
             filename = true,
-            all_varchar = true
+            all_varchar = true,
+            parallel = false
         )
     """
 
@@ -147,24 +192,36 @@ def main():
         # Conectar a DuckDB
         con = get_duckdb_connection()
         
-        # Obtener columnas para merge
-        merge_keys = _get_data_columns(con, full_table_name)
-        on_clause = _build_merge_condition(merge_keys)
+        # Descargar CSV a archivo temporal
+        temp_file_path = _download_csv_to_temp(url)
         
-        # Generar query de merge
-        source_sql = _get_csv_source_query(url)
-        
-        # Ejecutar merge
-        print(f"[CLOUD_RUN_JOB] Executing merge into {full_table_name}...")
-        con.execute(f"""
-            MERGE INTO {full_table_name} AS target
-            USING ({source_sql}) AS source
-            ON {on_clause}
-            WHEN NOT MATCHED THEN
-                INSERT *;
-        """)
-        
-        print(f"[CLOUD_RUN_JOB] ✅ Merged successfully into {full_table_name}")
+        try:
+            # Obtener columnas para merge
+            merge_keys = _get_data_columns(con, full_table_name)
+            on_clause = _build_merge_condition(merge_keys)
+            
+            # Generar query de merge usando archivo local
+            source_sql = _get_csv_source_query(temp_file_path, url)
+            
+            # Ejecutar merge
+            print(f"[CLOUD_RUN_JOB] Executing merge into {full_table_name}...")
+            con.execute(f"""
+                MERGE INTO {full_table_name} AS target
+                USING ({source_sql}) AS source
+                ON {on_clause}
+                WHEN NOT MATCHED THEN
+                    INSERT *;
+            """)
+            
+            print(f"[CLOUD_RUN_JOB] ✅ Merged successfully into {full_table_name}")
+        finally:
+            # Limpiar archivo temporal
+            try:
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+                    print(f"[CLOUD_RUN_JOB] ✅ Cleaned up temporary file")
+            except Exception as cleanup_error:
+                print(f"[CLOUD_RUN_JOB] ⚠️ Warning: Could not delete temporary file: {cleanup_error}")
         
         # Actualizar estadísticas
         try:
