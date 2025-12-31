@@ -46,25 +46,61 @@ def BRONZE_mitma_od_filter_urls(urls: list[str], zone_type: str = 'distritos'):
 
 
 @task
-def BRONZE_mitma_od_insert(url: str, zone_type: str = 'distritos'):
+def BRONZE_mitma_od_download_to_rustfs(url: str, zone_type: str = 'distritos'):
     """
-    Insert data from a single URL using Google Cloud Run Job.
-    The Cloud Run Job will download the CSV using Google Cloud's high-bandwidth connection
-    and merge it into DuckDB. The job executes and terminates automatically.
+    Download a MITMA URL and upload it to RustFS bucket mitma_raw.
+    This task runs before the insert task to ensure files are available in RustFS
+    instead of relying on external URLs that may be blocked from Google Cloud.
+    
+    Returns:
+    - S3 path in format s3://mitma_raw/{dataset}/{zone_type}/{filename}
+    """
+    from bronze.utils import download_url_to_rustfs
+    
+    dataset = 'od'
+    s3_path = download_url_to_rustfs(url, dataset, zone_type)
+    
+    return {
+        'url': url,
+        's3_path': s3_path,
+        'dataset': dataset,
+        'zone_type': zone_type
+    }
+
+
+@task
+def BRONZE_mitma_od_insert(download_result: dict, zone_type: str = 'distritos'):
+    """
+    Insert data from a RustFS S3 path using Google Cloud Run Job.
+    The Cloud Run Job will read the CSV from RustFS S3 bucket and merge it into DuckDB.
+    The job executes and terminates automatically.
     After successful merge, updates table statistics for optimization.
+    
+    Parameters:
+    - download_result: Dict from BRONZE_mitma_od_download_to_rustfs with 's3_path' and 'url' keys
+    - zone_type: Type of zone ('distritos', 'municipios', 'gau')
     """
     from utils.gcp import execute_cloud_run_job_merge_csv
 
     dataset = 'od'
     table_name = f'bronze_mitma_{dataset}_{zone_type}'
-    print(
-        f"[TASK] Processing URL: {url} into {table_name} via Google Cloud Run Job")
+    s3_path = download_result['s3_path']
+    original_url = download_result.get('url')
+    
+    print(f"[TASK] Processing S3 path: {s3_path} into {table_name} via Google Cloud Run Job")
+    if original_url:
+        print(f"[TASK] Original URL: {original_url}")
 
-    result = execute_cloud_run_job_merge_csv(table_name, url)
+    result = execute_cloud_run_job_merge_csv(
+        table_name=table_name, 
+        url=s3_path, 
+        is_s3_path=True
+    )
 
     return {
         'status': 'success',
-        'url': url,
+        's3_path': s3_path,
+        'original_url': original_url,
         'cloud_run_job_result': result,
         'table_name': table_name
     }

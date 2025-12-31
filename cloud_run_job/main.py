@@ -79,23 +79,25 @@ def download_file_with_user_agent(url, output_path):
     return output_path
 
 
-def _get_csv_source_query(url, use_local_file=False, local_file_path=None):
+def _get_csv_source_query(source_path, use_local_file=False, local_file_path=None, original_url=None):
     """
     Genera la subconsulta SELECT para leer los CSVs.
     Centraliza la configuración de read_csv.
     
     Args:
-        url: URL del archivo (si use_local_file=False) o URL original (para logging)
-        use_local_file: Si True, lee desde local_file_path en lugar de URL
+        source_path: URL HTTP o ruta S3 (s3://...) del archivo
+        use_local_file: Si True, lee desde local_file_path en lugar de source_path
         local_file_path: Ruta al archivo local descargado
+        original_url: URL original para logging (si se lee desde S3)
     """
-    csv_source = f"'{local_file_path}'" if use_local_file else f"'{url}'"
+    csv_source = f"'{local_file_path}'" if use_local_file else f"'{source_path}'"
+    source_file_value = original_url if original_url else source_path
     
     return f"""
         SELECT 
             * EXCLUDE (filename),
             CURRENT_TIMESTAMP AS loaded_at,
-            '{url}' AS source_file
+            '{source_file_value}' AS source_file
         FROM read_csv(
             {csv_source},
             filename = true,
@@ -159,9 +161,11 @@ def main():
     try:
         table_name = os.environ.get("TABLE_NAME")
         url = os.environ.get("URL")
+        is_s3_path = os.environ.get("IS_S3_PATH", "false").lower() == "true"
 
-        check_internet_connectivity("https://www.google.com")
-        check_internet_connectivity("https://movilidad-opendata.mitma.es")
+        if not table_name or not url:
+            print("❌ ERROR: Missing required environment variables: TABLE_NAME and URL")
+            sys.exit(1)
 
         con = get_ducklake_connection()
 
@@ -173,16 +177,13 @@ def main():
             )
 
         print(f"[CLOUD_RUN_JOB] Executing merge into {table_name}...")
+        print(f"[CLOUD_RUN_JOB] Source: {url} (is_s3_path={is_s3_path})")
         
-        # Intentar primero leer directamente desde URL (DuckDB httpfs)
-        # Si falla (por ejemplo, si AWS S3 bloquea las IPs de Google Cloud),
-        # descargamos primero el archivo con curl (que permite User-Agent)
-        local_file = None
-        
-        try:
-            # Intentar leer directamente desde URL
-            print(f"[CLOUD_RUN_JOB] Attempting to read CSV directly from URL...")
-            source_query = _get_csv_source_query(url, use_local_file=False)
+        # Si es una ruta S3, leer directamente desde S3
+        # DuckDB ya tiene configurado S3 en get_ducklake_connection()
+        if is_s3_path:
+            print(f"[CLOUD_RUN_JOB] Reading CSV from RustFS S3: {url}")
+            source_query = _get_csv_source_query(url, use_local_file=False, original_url=url)
             con.execute(f"""
                 MERGE INTO {table_name} AS target
                 USING ({source_query}) AS source
@@ -190,40 +191,56 @@ def main():
                 WHEN NOT MATCHED THEN
                     INSERT *;
             """)
-            print(f"[CLOUD_RUN_JOB] ✅ Successfully read CSV directly from URL")
-        except Exception as direct_error:
-            error_str = str(direct_error).lower()
-            # Si falla, intentar descargar primero con curl (permite User-Agent)
-            if any(keyword in error_str for keyword in ['403', '500', 'access denied', 'forbidden', 'could not open', 'http']):
-                print(f"[CLOUD_RUN_JOB] ⚠️ Direct URL read failed (likely server blocking): {direct_error}")
-                print(f"[CLOUD_RUN_JOB] Falling back to download-first approach...")
-                
-                # Crear archivo temporal
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.csv.gz') as tmp_file:
-                    local_file = tmp_file.name
-                
-                try:
-                    # Descargar con curl (permite User-Agent)
-                    download_file_with_user_agent(url, local_file)
+            print(f"[CLOUD_RUN_JOB] ✅ Successfully read CSV from RustFS S3")
+        else:
+            # Si es una URL HTTP, intentar leer directamente
+            # Si falla, descargar primero con curl (permite User-Agent)
+            local_file = None
+            
+            try:
+                # Intentar leer directamente desde URL
+                print(f"[CLOUD_RUN_JOB] Attempting to read CSV directly from URL...")
+                source_query = _get_csv_source_query(url, use_local_file=False)
+                con.execute(f"""
+                    MERGE INTO {table_name} AS target
+                    USING ({source_query}) AS source
+                    ON {_build_merge_condition(merge_keys)}
+                    WHEN NOT MATCHED THEN
+                        INSERT *;
+                """)
+                print(f"[CLOUD_RUN_JOB] ✅ Successfully read CSV directly from URL")
+            except Exception as direct_error:
+                error_str = str(direct_error).lower()
+                # Si falla, intentar descargar primero con curl (permite User-Agent)
+                if any(keyword in error_str for keyword in ['403', '500', 'access denied', 'forbidden', 'could not open', 'http']):
+                    print(f"[CLOUD_RUN_JOB] ⚠️ Direct URL read failed (likely server blocking): {direct_error}")
+                    print(f"[CLOUD_RUN_JOB] Falling back to download-first approach...")
                     
-                    # Leer desde archivo local
-                    source_query = _get_csv_source_query(url, use_local_file=True, local_file_path=local_file)
-                    con.execute(f"""
-                        MERGE INTO {table_name} AS target
-                        USING ({source_query}) AS source
-                        ON {_build_merge_condition(merge_keys)}
-                        WHEN NOT MATCHED THEN
-                            INSERT *;
-                    """)
-                    print(f"[CLOUD_RUN_JOB] ✅ Successfully read CSV from downloaded local file")
-                finally:
-                    # Limpiar archivo temporal
-                    if local_file and os.path.exists(local_file):
-                        os.unlink(local_file)
-                        print(f"[CLOUD_RUN_JOB] Cleaned up temporary file: {local_file}")
-            else:
-                # Si es otro tipo de error, re-lanzarlo
-                raise
+                    # Crear archivo temporal
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv.gz') as tmp_file:
+                        local_file = tmp_file.name
+                    
+                    try:
+                        # Descargar con curl (permite User-Agent)
+                        download_file_with_user_agent(url, local_file)
+                        
+                        # Leer desde archivo local
+                        source_query = _get_csv_source_query(url, use_local_file=True, local_file_path=local_file)
+                        con.execute(f"""
+                            MERGE INTO {table_name} AS target
+                            USING ({source_query}) AS source
+                            ON {_build_merge_condition(merge_keys)}
+                            WHEN NOT MATCHED THEN
+                                INSERT *;
+                        """)
+                        print(f"[CLOUD_RUN_JOB] ✅ Successfully read CSV from downloaded local file")
+                    finally:
+                        # Limpiar archivo temporal
+                        if local_file and os.path.exists(local_file):
+                            os.unlink(local_file)
+                            print(f"[CLOUD_RUN_JOB] Cleaned up temporary file: {local_file}")
+                else:
+                    raise
 
         print(f"[CLOUD_RUN_JOB] ✅ Merged successfully into {table_name}")
 

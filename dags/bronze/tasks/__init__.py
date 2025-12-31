@@ -4,6 +4,7 @@ Bronze Layer Airflow Tasks Package
 
 from .mitma.mitma_od import (
     BRONZE_mitma_od_urls,
+    BRONZE_mitma_od_download_to_rustfs,
     BRONZE_mitma_od_insert,
 )
 from .mitma.mitma_people_day import (
@@ -52,6 +53,7 @@ from .holidays.spanish_holidays import BRONZE_load_spanish_holidays
 
 __all__ = [
     "BRONZE_mitma_od_urls",
+    "BRONZE_mitma_od_download_to_rustfs",
     "BRONZE_mitma_od_insert",
     "BRONZE_mitma_people_day_urls",
     "BRONZE_mitma_people_day_insert",

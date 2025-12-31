@@ -20,6 +20,7 @@ from bronze.tasks.mitma import (
     BRONZE_mitma_od_urls,
     BRONZE_mitma_od_create_table,
     BRONZE_mitma_od_filter_urls,
+    BRONZE_mitma_od_download_to_rustfs,
     BRONZE_mitma_od_insert,
     BRONZE_mitma_people_day_urls,
     BRONZE_mitma_people_day_create_table,
@@ -76,6 +77,14 @@ def create_tg_od(zone_type: str):
             zone_type=zone_type,
         )
        
+        od_download = (
+            BRONZE_mitma_od_download_to_rustfs.override(
+                task_id="od_download",
+            )
+            .partial(zone_type=zone_type)
+            .expand(url=od_filtered_urls)
+        )
+       
         od_insert = (
             BRONZE_mitma_od_insert.override(
                 task_id="od_insert",
@@ -84,7 +93,7 @@ def create_tg_od(zone_type: str):
                 pool_slots=default_pool_slots,
             )
             .partial(zone_type=zone_type)
-            .expand(url=od_filtered_urls)
+            .expand(download_result=od_download)
         )
 
         od_skipped = EmptyOperator(
@@ -93,7 +102,7 @@ def create_tg_od(zone_type: str):
 
         od_urls >> od_filtered_urls >> branch_task
 
-        branch_task >> od_create >> od_insert
+        branch_task >> od_create >> od_download >> od_insert
         branch_task >> od_skipped
         
         return SimpleNamespace(

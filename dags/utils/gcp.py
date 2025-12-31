@@ -60,19 +60,21 @@ from google.cloud import run_v2  # type: ignore
 def execute_cloud_run_job_merge_csv(
     table_name: str,
     url: str,
+    is_s3_path: bool = False,
     **context
 ) -> Dict:
     """
     Ejecuta un Cloud Run Job para mergear datos CSV en DuckDB.
     
     Esta función ejecuta un Cloud Run Job que:
-    1. Descarga el CSV desde la URL (usando el ancho de banda de GCP)
+    1. Lee el CSV desde la URL (HTTP/HTTPS) o desde RustFS S3 (s3://...)
     2. Mergea los datos en la tabla DuckDB especificada
     3. Se ejecuta y termina automáticamente
     
     Parameters:
     - table_name: Nombre de la tabla (sin prefijo 'bronze_')
-    - url: URL del archivo CSV a descargar y mergear
+    - url: URL del archivo CSV (HTTP/HTTPS) o ruta S3 (s3://bucket/key)
+    - is_s3_path: Si True, la URL es una ruta S3 (s3://...), si False es HTTP/HTTPS
     - **context: Contexto de Airflow (se pasa automáticamente)
     
     Returns:
@@ -114,6 +116,7 @@ def execute_cloud_run_job_merge_csv(
     env_vars_list = [
         {'name': 'TABLE_NAME', 'value': table_name},
         {'name': 'URL', 'value': url},
+        {'name': 'IS_S3_PATH', 'value': 'true' if is_s3_path else 'false'}
     ]
     
     print(f"[CLOUD_RUN_JOB] Executing job: {job_name}")

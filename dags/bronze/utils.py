@@ -6,6 +6,7 @@ Contains helper functions for URL fetching and zoning data processing.
 from utils.utils import get_ducklake_connection
 import re
 import urllib.request
+import urllib.parse
 import requests
 import pandas as pd
 import geopandas as gpd
@@ -20,6 +21,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 LAKE_LAYER = 'bronze'
+RUSTFS_RAW_BUCKET = 'mitma_raw'
 
 
 def get_mitma_urls(dataset, zone_type, start_date, end_date):
@@ -96,6 +98,71 @@ def get_mitma_urls(dataset, zone_type, start_date, end_date):
         print(f"WARNING: No URLs found. Check if data exists for the requested date range.")
 
     return urls
+
+
+def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
+    """
+    Descarga un archivo desde una URL y lo sube a RustFS bucket mitma_raw.
+    
+    Parameters:
+    - url: URL del archivo a descargar
+    - dataset: Dataset tipo ('od', 'people_day', 'overnight_stay')
+    - zone_type: Tipo de zona ('distritos', 'municipios', 'gau')
+    
+    Returns:
+    - Ruta S3 en formato s3://mitma_raw/{dataset}/{zone_type}/{filename}
+    """
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+    from airflow.models import Variable
+    
+    print(f"[DOWNLOAD] Downloading {url} to RustFS...")
+    
+    # Extraer nombre de archivo de la URL
+    parsed_url = urllib.parse.urlparse(url)
+    filename = os.path.basename(parsed_url.path)
+    
+    if not filename:
+        raise ValueError(f"Could not extract filename from URL: {url}")
+    
+    # Construir ruta S3: mitma_raw/{dataset}/{zone_type}/{filename}
+    s3_key = f"{dataset}/{zone_type}/{filename}"
+    s3_path = f"s3://{RUSTFS_RAW_BUCKET}/{s3_key}"
+    
+    print(f"[DOWNLOAD] Target S3 path: {s3_path}")
+    
+    # Conectar a RustFS
+    s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
+    
+    # Verificar si el archivo ya existe en RustFS
+    if s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET):
+        print(f"[DOWNLOAD] ✅ File already exists in RustFS: {s3_path}")
+        return s3_path
+    
+    # Descargar archivo desde URL con User-Agent
+    print(f"[DOWNLOAD] Downloading from URL...")
+    req = urllib.request.Request(url, headers={"User-Agent": "MITMA-DuckLake-Loader"})
+    
+    try:
+        with urllib.request.urlopen(req, timeout=300) as response:
+            file_content = response.read()
+            print(f"[DOWNLOAD] Downloaded {len(file_content)} bytes")
+    except Exception as e:
+        raise RuntimeError(f"Failed to download file from {url}: {e}")
+    
+    # Subir a RustFS
+    print(f"[DOWNLOAD] Uploading to RustFS bucket '{RUSTFS_RAW_BUCKET}'...")
+    try:
+        s3_hook.load_bytes(
+            bytes_data=file_content,
+            key=s3_key,
+            bucket_name=RUSTFS_RAW_BUCKET,
+            replace=True
+        )
+        print(f"[DOWNLOAD] ✅ Successfully uploaded to {s3_path}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to upload file to RustFS: {e}")
+    
+    return s3_path
 
 
 def get_mitma_zoning_urls(zone_type):
