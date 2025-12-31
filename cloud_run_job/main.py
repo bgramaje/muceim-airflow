@@ -147,11 +147,17 @@ def check_url_headers(url):
     """
     Ejecuta curl -I a la URL y loguea el resultado por consola.
     Valida que la respuesta sea exitosa (2xx o 3xx).
+    Incluye User-Agent para evitar bloqueos de servidores que requieren headers.
     """
     print(f"[CLOUD_RUN_JOB] Checking URL headers with curl -I: {url}")
     try:
+        # Usar User-Agent similar al que se usa en utils.py para MITMA
         result = subprocess.run(
-            ["curl", "-I", "-s", "-w", "\nHTTP_CODE:%{http_code}", url],
+            [
+                "curl", "-I", "-s", "-w", "\nHTTP_CODE:%{http_code}", 
+                "-H", "User-Agent: MITMA-DuckLake-Loader",
+                url
+            ],
             capture_output=True,
             text=True,
             timeout=30
@@ -197,10 +203,6 @@ def main():
             text=True,
             timeout=10
         )
-        
-        print(f"[CLOUD_RUN_JOB] Google test - exit code: {test_result.returncode}")
-        print(f"[CLOUD_RUN_JOB] Google test - output:")
-        print(test_result.stdout)
         
         if "HTTP_CODE:200" in test_result.stdout:
             print("[CLOUD_RUN_JOB] ✅ Internet access confirmed - Google returned HTTP 200")
