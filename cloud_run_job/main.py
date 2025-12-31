@@ -13,6 +13,7 @@ y lo inserta en DuckDB (DuckLake).
 import os
 import sys
 import subprocess
+from urllib.parse import urlparse
 import duckdb
 
 
@@ -170,6 +171,44 @@ def check_url_headers(url):
         print(f"[CLOUD_RUN_JOB] ⚠️ Error executing curl -I: {e}")
 
 
+def ping_host(url):
+    """
+    Extrae el hostname de la URL y ejecuta ping, logueando el resultado por consola.
+    """
+    try:
+        parsed_url = urlparse(url)
+        hostname = parsed_url.hostname
+        
+        if not hostname:
+            print(f"[CLOUD_RUN_JOB] ⚠️ Could not extract hostname from URL: {url}")
+            return
+        
+        print(f"[CLOUD_RUN_JOB] Pinging hostname: {hostname}")
+        try:
+            result = subprocess.run(
+                ["ping", "-c", "4", "-W", "5", hostname],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            print(f"[CLOUD_RUN_JOB] ping exit code: {result.returncode}")
+            print(f"[CLOUD_RUN_JOB] ping output:")
+            print(result.stdout)
+            
+            if result.stderr:
+                print(f"[CLOUD_RUN_JOB] ping stderr:")
+                print(result.stderr)
+                
+        except subprocess.TimeoutExpired:
+            print(f"[CLOUD_RUN_JOB] ⚠️ ping timed out after 30 seconds")
+        except Exception as e:
+            print(f"[CLOUD_RUN_JOB] ⚠️ Error executing ping: {e}")
+            
+    except Exception as e:
+        print(f"[CLOUD_RUN_JOB] ⚠️ Error parsing URL for ping: {e}")
+
+
 def main():
     """Función principal del Cloud Run Job."""
     try:
@@ -184,6 +223,7 @@ def main():
         full_table_name = f"bronze_{table_name}"
 
         check_url_headers(url)
+        ping_host(url)
 
         print(f"[CLOUD_RUN_JOB] Processing: {url} -> {full_table_name}")
         print(f"[CLOUD_RUN_JOB] Zone type: {zone_type}")
