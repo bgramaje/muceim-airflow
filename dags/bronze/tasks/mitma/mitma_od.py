@@ -48,12 +48,12 @@ def BRONZE_mitma_od_filter_urls(urls: list[str], zone_type: str = 'distritos'):
 @task
 def BRONZE_mitma_od_download_to_rustfs(url: str, zone_type: str = 'distritos'):
     """
-    Download a MITMA URL and upload it to RustFS bucket mitma_raw.
+    Download a MITMA URL and upload it to RustFS bucket mitma-raw.
     This task runs before the insert task to ensure files are available in RustFS
     instead of relying on external URLs that may be blocked from Google Cloud.
     
     Returns:
-    - S3 path in format s3://mitma_raw/{dataset}/{zone_type}/{filename}
+    - S3 path in format s3://mitma-raw/{dataset}/{zone_type}/{filename}
     """
     from bronze.utils import download_url_to_rustfs
     
@@ -94,7 +94,8 @@ def BRONZE_mitma_od_insert(download_result: dict, zone_type: str = 'distritos'):
     result = execute_cloud_run_job_merge_csv(
         table_name=table_name, 
         url=s3_path, 
-        is_s3_path=True
+        is_s3_path=True,
+        original_url=original_url
     )
 
     return {

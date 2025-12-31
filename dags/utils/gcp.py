@@ -60,21 +60,23 @@ from google.cloud import run_v2  # type: ignore
 def execute_cloud_run_job_merge_csv(
     table_name: str,
     url: str,
-    is_s3_path: bool = False,
+    is_s3_path: bool = True,
+    original_url: str = None,
     **context
 ) -> Dict:
     """
     Ejecuta un Cloud Run Job para mergear datos CSV en DuckDB.
     
     Esta función ejecuta un Cloud Run Job que:
-    1. Lee el CSV desde la URL (HTTP/HTTPS) o desde RustFS S3 (s3://...)
+    1. Lee el CSV desde RustFS S3 (s3://...)
     2. Mergea los datos en la tabla DuckDB especificada
     3. Se ejecuta y termina automáticamente
     
     Parameters:
     - table_name: Nombre de la tabla (sin prefijo 'bronze_')
-    - url: URL del archivo CSV (HTTP/HTTPS) o ruta S3 (s3://bucket/key)
-    - is_s3_path: Si True, la URL es una ruta S3 (s3://...), si False es HTTP/HTTPS
+    - url: Ruta S3 del archivo CSV (s3://bucket/key)
+    - is_s3_path: Siempre True (mantenido para compatibilidad, pero siempre debe ser S3)
+    - original_url: URL original para logging/auditing (opcional)
     - **context: Contexto de Airflow (se pasa automáticamente)
     
     Returns:
@@ -113,11 +115,22 @@ def execute_cloud_run_job_merge_csv(
             "Please set it to your GCP project ID"
         )
     
+    # Validar que la URL es una ruta S3
+    if not url.startswith("s3://"):
+        raise ValueError(
+            f"Invalid S3 path: {url}. "
+            "Expected format: s3://bucket/key. "
+            "The Cloud Run job only supports S3 paths."
+        )
+    
     env_vars_list = [
         {'name': 'TABLE_NAME', 'value': table_name},
-        {'name': 'URL', 'value': url},
-        {'name': 'IS_S3_PATH', 'value': 'true' if is_s3_path else 'false'}
+        {'name': 'URL', 'value': url},  # Siempre es una ruta S3
     ]
+    
+    # Añadir URL original si está disponible (para logging/auditing)
+    if original_url:
+        env_vars_list.append({'name': 'ORIGINAL_URL', 'value': original_url})
     
     print(f"[CLOUD_RUN_JOB] Executing job: {job_name}")
     print(f"[CLOUD_RUN_JOB] Region: {region}, Project: {project_id}")
