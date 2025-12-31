@@ -65,7 +65,7 @@ class DuckLakeConnectionManager:
         
         # Try to use Airflow connections first, fallback to environment variables
         try:
-            from airflow.hooks.base import BaseHook # type: ignore
+            from airflow.sdk.bases.hook import BaseHook # type: ignore
             from airflow.models import Variable # type: ignore
             
             print("🔗 Usando conexiones de Airflow...")
