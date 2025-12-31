@@ -12,6 +12,7 @@ y lo inserta en DuckDB (DuckLake).
 
 import os
 import sys
+import subprocess
 import duckdb
 
 
@@ -142,6 +143,33 @@ def _get_csv_source_query(urls):
     """
 
 
+def check_url_headers(url):
+    """
+    Ejecuta curl -I a la URL y loguea el resultado por consola.
+    """
+    print(f"[CLOUD_RUN_JOB] Checking URL headers with curl -I: {url}")
+    try:
+        result = subprocess.run(
+            ["curl", "-I", url],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        print(f"[CLOUD_RUN_JOB] curl exit code: {result.returncode}")
+        print(f"[CLOUD_RUN_JOB] curl output:")
+        print(result.stdout)
+        
+        if result.stderr:
+            print(f"[CLOUD_RUN_JOB] curl stderr:")
+            print(result.stderr)
+            
+    except subprocess.TimeoutExpired:
+        print(f"[CLOUD_RUN_JOB] ⚠️ curl -I timed out after 30 seconds")
+    except Exception as e:
+        print(f"[CLOUD_RUN_JOB] ⚠️ Error executing curl -I: {e}")
+
+
 def main():
     """Función principal del Cloud Run Job."""
     try:
@@ -154,6 +182,8 @@ def main():
             sys.exit(1)
 
         full_table_name = f"bronze_{table_name}"
+
+        check_url_headers(url)
 
         print(f"[CLOUD_RUN_JOB] Processing: {url} -> {full_table_name}")
         print(f"[CLOUD_RUN_JOB] Zone type: {zone_type}")
