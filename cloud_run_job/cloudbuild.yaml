@@ -3,6 +3,10 @@ steps:
   - name: 'bash'
     args: ['-c', 'cp requirements.txt cloud_run_job/requirements.txt']
   
+  # Copiar utils.py desde dags/utils al directorio cloud_run_job
+  - name: 'bash'
+    args: ['-c', 'cp dags/utils/utils.py cloud_run_job/utils.py']
+  
   - name: 'gcr.io/cloud-builders/docker'
     dir: 'cloud_run_job'
     args: ['build', '-t', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest', '.']

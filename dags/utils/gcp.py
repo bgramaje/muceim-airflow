@@ -60,7 +60,6 @@ from google.cloud import run_v2  # type: ignore
 def execute_cloud_run_job_merge_csv(
     table_name: str,
     url: str,
-    zone_type: str = 'distritos',
     **context
 ) -> Dict:
     """
@@ -74,7 +73,6 @@ def execute_cloud_run_job_merge_csv(
     Parameters:
     - table_name: Nombre de la tabla (sin prefijo 'bronze_')
     - url: URL del archivo CSV a descargar y mergear
-    - zone_type: Tipo de zona (ej: 'distritos', 'municipios', 'gau')
     - **context: Contexto de Airflow (se pasa automáticamente)
     
     Returns:
@@ -116,7 +114,6 @@ def execute_cloud_run_job_merge_csv(
     env_vars_list = [
         {'name': 'TABLE_NAME', 'value': table_name},
         {'name': 'URL', 'value': url},
-        {'name': 'ZONE_TYPE', 'value': zone_type}
     ]
     
     print(f"[CLOUD_RUN_JOB] Executing job: {job_name}")

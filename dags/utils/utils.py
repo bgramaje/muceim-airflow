@@ -59,33 +59,59 @@ class DuckLakeConnectionManager:
     def _create_connection(self):
         """
         Create a new DuckLake connection with RustFS and Postgres.
-        Uses Airflow connections solely.
+        Uses Airflow connections if available, otherwise uses environment variables (for Cloud Run).
         """
-        from airflow.hooks.base import BaseHook # type: ignore
-        from airflow.models import Variable # type: ignore
+        import os
         
-        print("🔗 Usando conexiones de Airflow...")
-        
-        # Obtener configuración de PostgreSQL desde Airflow
-        pg_conn = BaseHook.get_connection('postgres_datos_externos')
-        POSTGRES_HOST = pg_conn.host
-        POSTGRES_PORT = pg_conn.port or 5432
-        POSTGRES_DB = pg_conn.schema
-        POSTGRES_USER = pg_conn.login
-        POSTGRES_PASSWORD = pg_conn.password
-        
-        s3_conn = BaseHook.get_connection('rustfs_s3_conn')
-        s3_extra = s3_conn.extra_dejson
-        endpoint_url = s3_extra.get('endpoint_url', 'http://rustfs:9000')
-        S3_ENDPOINT = endpoint_url.replace('http://', '').replace('https://', '')
-        
-        # Las credenciales AWS están en extra_dejson
-        RUSTFS_USER = s3_extra.get('aws_access_key_id', 'admin')
-        RUSTFS_PASSWORD = s3_extra.get('aws_secret_access_key', 'muceim-duckduck.2025!')
-        RUSTFS_SSL = 'true' if 'https' in endpoint_url else 'false'
-        
-        # Obtener bucket desde Variables de Airflow
-        RUSTFS_BUCKET = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+        # Try to use Airflow connections first, fallback to environment variables
+        try:
+            from airflow.hooks.base import BaseHook # type: ignore
+            from airflow.models import Variable # type: ignore
+            
+            print("🔗 Usando conexiones de Airflow...")
+            
+            # Obtener configuración de PostgreSQL desde Airflow
+            pg_conn = BaseHook.get_connection('postgres_datos_externos')
+            POSTGRES_HOST = pg_conn.host
+            POSTGRES_PORT = pg_conn.port or 5432
+            POSTGRES_DB = pg_conn.schema
+            POSTGRES_USER = pg_conn.login
+            POSTGRES_PASSWORD = pg_conn.password
+            
+            s3_conn = BaseHook.get_connection('rustfs_s3_conn')
+            s3_extra = s3_conn.extra_dejson
+            endpoint_url = s3_extra.get('endpoint_url', 'http://rustfs:9000')
+            S3_ENDPOINT = endpoint_url.replace('http://', '').replace('https://', '')
+            
+            # Las credenciales AWS están en extra_dejson
+            RUSTFS_USER = s3_extra.get('aws_access_key_id', 'admin')
+            RUSTFS_PASSWORD = s3_extra.get('aws_secret_access_key', 'muceim-duckduck.2025!')
+            RUSTFS_SSL = 'true' if 'https' in endpoint_url else 'false'
+            
+            # Obtener bucket desde Variables de Airflow
+            RUSTFS_BUCKET = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+            
+        except (ImportError, Exception):
+            # Fallback to environment variables (Cloud Run scenario)
+            print("🔗 Usando variables de entorno (Cloud Run)...")
+            
+            POSTGRES_HOST = os.environ.get("POSTGRES_HOST")
+            POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
+            POSTGRES_DB = os.environ.get("POSTGRES_DB")
+            POSTGRES_USER = os.environ.get("POSTGRES_USER")
+            POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD")
+            
+            S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "rustfs:9000")
+            RUSTFS_USER = os.environ.get("RUSTFS_USER")
+            RUSTFS_PASSWORD = os.environ.get("RUSTFS_PASSWORD")
+            RUSTFS_BUCKET = os.environ.get("RUSTFS_BUCKET", "mitma")
+            RUSTFS_SSL = os.environ.get("RUSTFS_SSL", "false")
+            
+            if not all([POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD]):
+                raise ValueError("Missing required PostgreSQL environment variables")
+            
+            if not all([RUSTFS_USER, RUSTFS_PASSWORD]):
+                raise ValueError("Missing required RustFS environment variables")
         
         print(f"   ✅ PostgreSQL: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}")
         print(f"   ✅ RustFS: {S3_ENDPOINT}")

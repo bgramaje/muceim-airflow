@@ -16,7 +16,7 @@ def BRONZE_mitma_od_urls(zone_type: str = 'distritos', start_date: str = None, e
 
     dataset = 'od'
     urls = get_mitma_urls(dataset, zone_type, start_date, end_date)
-    print(f"[TASK] Generated {len(urls)} URLs for {dataset} {zone_type}")
+    print(f"[TASK] {len(urls)} URLs found for {dataset} {zone_type}")
     return urls
 
 
@@ -54,13 +54,17 @@ def BRONZE_mitma_od_insert(url: str, zone_type: str = 'distritos'):
     After successful merge, updates table statistics for optimization.
     """
     from utils.gcp import execute_cloud_run_job_merge_csv
-    from utils.utils import get_ducklake_connection
 
     dataset = 'od'
-    table_name = f'mitma_{dataset}_{zone_type}'
-    full_table_name = f'bronze_{table_name}'
-    print(f"[TASK] Processing URL: {url} into {table_name} via Google Cloud Run Job")
+    table_name = f'bronze_mitma_{dataset}_{zone_type}'
+    print(
+        f"[TASK] Processing URL: {url} into {table_name} via Google Cloud Run Job")
 
-    result = execute_cloud_run_job_merge_csv(table_name, url, zone_type)
-    
-    return {'status': 'success', 'url': url, 'cloud_run_job_result': result}
+    result = execute_cloud_run_job_merge_csv(table_name, url)
+
+    return {
+        'status': 'success',
+        'url': url,
+        'cloud_run_job_result': result,
+        'table_name': table_name
+    }
