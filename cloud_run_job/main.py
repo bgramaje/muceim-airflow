@@ -62,16 +62,13 @@ def get_duckdb_connection():
                 raise
     
     # Configurar S3/RustFS
+    # Nota: Estas son las configuraciones oficiales de DuckDB para S3/httpfs
     con.execute(f"SET s3_endpoint='{S3_ENDPOINT}';")
     con.execute(f"SET s3_access_key_id='{RUSTFS_USER}';")
     con.execute(f"SET s3_secret_access_key='{RUSTFS_PASSWORD}';")
     con.execute(f"SET s3_use_ssl={RUSTFS_SSL};")
     con.execute("SET s3_url_style='path';")
-    
-    # Configurar httpfs para manejar URLs HTTP/HTTPS con mejor manejo de errores
-    con.execute("SET httpfs_allow_http=true;")
-    con.execute("SET httpfs_retry_wait_ms=2000;")
-    con.execute("SET httpfs_retry_count=5;")
+    # No necesitamos configuraciones de httpfs ya que descargamos el archivo primero
     
     # Optimizaciones de memoria
     con.execute("SET memory_limit='4GB';")
