@@ -120,6 +120,7 @@ def _download_csv_to_temp(url):
     """
     Descarga el CSV desde la URL a un archivo temporal.
     Esto evita problemas con HEAD requests que algunos servidores no soportan.
+    Usa headers similares a un navegador real para evitar bloqueos del servidor.
     """
     print(f"[CLOUD_RUN_JOB] Downloading CSV from {url}...")
     try:
@@ -128,9 +129,19 @@ def _download_csv_to_temp(url):
         temp_path = temp_file.name
         temp_file.close()
         
-        # Descargar usando GET request (no HEAD)
+        # Descargar usando GET request con headers similares a un navegador real
+        # para evitar que el servidor MITMA detecte la petición como bot
         req = urllib.request.Request(url)
-        req.add_header('User-Agent', 'Mozilla/5.0 (Cloud Run Job)')
+        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        req.add_header('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7')
+        req.add_header('Accept-Language', 'es-ES,es;q=0.9,en;q=0.8')
+        req.add_header('Accept-Encoding', 'gzip, deflate, br')
+        req.add_header('Connection', 'keep-alive')
+        req.add_header('Upgrade-Insecure-Requests', '1')
+        req.add_header('Sec-Fetch-Dest', 'document')
+        req.add_header('Sec-Fetch-Mode', 'navigate')
+        req.add_header('Sec-Fetch-Site', 'none')
+        req.add_header('Cache-Control', 'max-age=0')
         
         with urllib.request.urlopen(req, timeout=300) as response:
             with open(temp_path, 'wb') as f:
