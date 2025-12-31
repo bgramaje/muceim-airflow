@@ -6,6 +6,21 @@ Contains helper functions for DuckDB operations and connection management.
 import duckdb
 from contextlib import contextmanager
 
+def load_extension(con: duckdb.DuckDBPyConnection, extension: str):
+    """Carga una extensión de DuckDB."""
+    try:
+        con.execute(f"INSTALL {extension};")
+        con.execute(f"LOAD {extension};")
+        print(f"✅ Extension {extension} loaded")
+    except Exception as e:
+        print(f"⚠️ Warning loading {extension}: {e}")
+        try:
+            con.execute(f"LOAD {extension};")
+            print(f"✅ Extension {extension} loaded (already installed)")
+        except:
+            print(f"❌ Failed to load {extension}")
+            raise
+
 class DuckLakeConnectionManager:
     """
     Singleton manager for DuckLake connections.
@@ -81,61 +96,28 @@ class DuckLakeConnectionManager:
         con = duckdb.connect()
         
         # Install and load critical extensions first
-        critical_extensions = ['ducklake', 'postgres', 'httpfs']
+        critical_extensions = ['ducklake', 'postgres', 'httpfs', 'spatial']
         for ext in critical_extensions:
-            try:
-                con.execute(f"INSTALL {ext};")
-                con.execute(f"LOAD {ext};")
-                print(f"   ✅ Extension {ext} loaded")
-            except Exception as e:
-                print(f"   ⚠️ Warning loading {ext}: {e}")
-                # Try to load anyway in case it's already installed
-                try:
-                    con.execute(f"LOAD {ext};")
-                    print(f"   ✅ Extension {ext} loaded (already installed)")
-                except Exception as e2:
-                    print(f"   ❌ Failed to load {ext}: {e2}")
-                    raise  # Critical extensions must load
+            load_extension(con, ext)
         
-        # Try to load spatial extension (optional for some tasks)
-        try:
-            con.execute("INSTALL spatial;")
-            con.execute("LOAD spatial;")
-            print(f"   ✅ Extension spatial loaded")
-        except Exception as e:
-            print(f"   ⚠️ Spatial extension not loaded: {e}")
-            print(f"   ℹ️  Spatial functions will not be available")
-        
-        # Configure S3 for RustFS
         con.execute(f"SET s3_endpoint='{S3_ENDPOINT}';")
         con.execute(f"SET s3_access_key_id='{RUSTFS_USER}';")
         con.execute(f"SET s3_secret_access_key='{RUSTFS_PASSWORD}';")
         con.execute(f"SET s3_use_ssl={RUSTFS_SSL};")
         con.execute("SET s3_url_style='path';")
         con.execute("SET preserve_insertion_order=false;")
-        
-        # OPTIMIZACION DE RECURSOS PARA AIRFLOW - Evitar que se mate por recursos
-        # Limitar memoria para evitar OOM killer
-        con.execute("SET memory_limit='4GB';")  # Ajusta según RAM disponible (2GB si <8GB RAM)
-        
-        # Limitar threads para no saturar CPU
-        con.execute("SET threads=4;")  # Reduce según cores (1-2 si problemas persisten)
-        con.execute("SET worker_threads=2;")  # Threads para I/O asíncrono
-        
-        # Optimizar spillfiles en disco cuando se agota RAM
+            
+        con.execute("SET memory_limit='4GB';")
+        con.execute("SET threads=4;")
+        con.execute("SET worker_threads=4;")
         con.execute("SET max_temp_directory_size='40GiB';")
-        con.execute("SET temp_directory='/tmp/duckdb';")  # Directorio para spillover
-        
-        # Optimizaciones de cache y objeto
-        con.execute("SET enable_object_cache=true;")  # Cache de metadatos (bajo overhead)
-        
-        # Optimizaciones de S3/RustFS para reducir memory peaks
-        con.execute("SET force_download=false;")  # Stream en vez de descargar todo
-        
-        # Check if ducklake is already attached
+        con.execute("SET temp_directory='/tmp/duckdb';")
+        con.execute("SET enable_object_cache=true;")
+
+        con.execute("SET force_download=false;")
+
         databases = con.execute("SELECT database_name FROM duckdb_databases();").fetchdf()
         if 'ducklake' not in databases['database_name'].values:
-            # Attach DuckLake with Postgres Catalog
             postgres_connection_string = f"""
                 dbname={POSTGRES_DB} host={POSTGRES_HOST} user={POSTGRES_USER} password={POSTGRES_PASSWORD} port={POSTGRES_PORT} 
                 sslmode=require connect_timeout=30 keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=5 tcp_user_timeout=30000
