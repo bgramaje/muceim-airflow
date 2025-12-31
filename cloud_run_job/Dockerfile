@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y \
 # Establecer directorio de trabajo
 WORKDIR /app
 
-# Copiar requirements e instalar dependencias
-COPY requirements.txt .
+# Copiar requirements del nivel superior e instalar dependencias
+COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Instalar extensiones de DuckDB

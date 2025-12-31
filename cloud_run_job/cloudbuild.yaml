@@ -1,10 +1,12 @@
 steps:
-  # Construir la imagen Docker desde el directorio cloud_run_job
+  # Copiar requirements.txt del nivel superior al directorio cloud_run_job
+  - name: 'bash'
+    args: ['-c', 'cp requirements.txt cloud_run_job/requirements.txt']
+  
   - name: 'gcr.io/cloud-builders/docker'
     dir: 'cloud_run_job'
     args: ['build', '-t', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest', '.']
   
-  # Subir la imagen a Artifact Registry (europe-southwest1)
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest']
 
@@ -12,7 +14,6 @@ steps:
 images:
   - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest'
 
-# Opciones
 options:
   machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
