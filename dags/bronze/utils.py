@@ -196,6 +196,57 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
     return s3_path
 
 
+def delete_file_from_rustfs(s3_path: str) -> bool:
+    """
+    Elimina un archivo del bucket RustFS mitma-raw.
+    
+    Parameters:
+    - s3_path: Ruta S3 completa en formato s3://bucket/key
+    
+    Returns:
+    - True si el archivo fue eliminado exitosamente o no existía, False en caso de error
+    """
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+    print(f"[DELETE] Attempting to delete file from RustFS: {s3_path}")
+    
+    if not s3_path.startswith("s3://"):
+        print(f"[DELETE] ⚠️ Invalid S3 path format: {s3_path}")
+        return False
+    
+    # Extraer bucket y key de s3://bucket/key
+    path_without_prefix = s3_path[5:]  # remover "s3://"
+    parts = path_without_prefix.split("/", 1)
+    
+    if len(parts) != 2:
+        print(f"[DELETE] ⚠️ Could not parse S3 path: {s3_path}")
+        return False
+    
+    bucket_name = parts[0]
+    s3_key = parts[1]
+    
+    # Verificar que el bucket sea mitma-raw (seguridad)
+    if bucket_name != RUSTFS_RAW_BUCKET:
+        print(f"[DELETE] ⚠️ Only files from {RUSTFS_RAW_BUCKET} bucket can be deleted. Got: {bucket_name}")
+        return False
+    
+    print(f"[DELETE] Bucket: {bucket_name}, Key: {s3_key}")
+    
+    s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
+    
+    try:
+        if s3_hook.check_for_key(s3_key, bucket_name=bucket_name):
+            s3_client = s3_hook.get_conn()
+            s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
+            print(f"[DELETE] ✅ Successfully deleted file: {s3_path}")
+            return True
+        else:
+            print(f"[DELETE] ⚠️ File does not exist in RustFS: {s3_path} (may have been already deleted)")
+            return True  # Consideramos esto como éxito (idempotente)
+    except Exception as e:
+        print(f"[DELETE] ❌ Error deleting file from RustFS: {e}")
+        return False
+
+
 def get_mitma_zoning_urls(zone_type):
     """
     Fetches MITMA Zoning URLs (Shapefiles + CSVs) from RSS feed using Regex.

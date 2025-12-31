@@ -74,13 +74,14 @@ def BRONZE_mitma_od_insert(download_result: dict, zone_type: str = 'distritos'):
     Insert data from a RustFS S3 path using Google Cloud Run Job.
     The Cloud Run Job will read the CSV from RustFS S3 bucket and merge it into DuckDB.
     The job executes and terminates automatically.
-    After successful merge, updates table statistics for optimization.
+    After successful merge, deletes the file from RustFS to free up space.
     
     Parameters:
     - download_result: Dict from BRONZE_mitma_od_download_to_rustfs with 's3_path' and 'url' keys
     - zone_type: Type of zone ('distritos', 'municipios', 'gau')
     """
     from utils.gcp import execute_cloud_run_job_merge_csv
+    from bronze.utils import delete_file_from_rustfs
 
     dataset = 'od'
     table_name = f'bronze_mitma_{dataset}_{zone_type}'
@@ -91,17 +92,28 @@ def BRONZE_mitma_od_insert(download_result: dict, zone_type: str = 'distritos'):
     if original_url:
         print(f"[TASK] Original URL: {original_url}")
 
+    # Ejecutar el Cloud Run job
     result = execute_cloud_run_job_merge_csv(
         table_name=table_name, 
         url=s3_path, 
         is_s3_path=True,
         original_url=original_url
     )
+    
+    # Si el job completó exitosamente, eliminar el archivo de RustFS
+    print(f"[TASK] Cloud Run job completed successfully, deleting file from RustFS: {s3_path}")
+    delete_success = delete_file_from_rustfs(s3_path)
+    
+    if delete_success:
+        print(f"[TASK] ✅ File deleted from RustFS successfully")
+    else:
+        print(f"[TASK] ⚠️ Failed to delete file from RustFS (continuing anyway)")
 
     return {
         'status': 'success',
         's3_path': s3_path,
         'original_url': original_url,
         'cloud_run_job_result': result,
-        'table_name': table_name
+        'table_name': table_name,
+        'file_deleted': delete_success
     }

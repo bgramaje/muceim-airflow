@@ -21,6 +21,31 @@ def load_extension(con: duckdb.DuckDBPyConnection, extension: str):
             print(f"❌ Failed to load {extension}")
             raise
 
+def _get_default_duckdb_config():
+    """
+    Get default DuckDB configuration parameters.
+    
+    Default values:
+    - memory_limit: 8GB
+    - threads: 4
+    - worker_threads: 4
+    - max_temp_directory_size: 40GiB
+    - temp_directory: /tmp/duckdb
+    - enable_object_cache: true
+    
+    Returns:
+    - dict: Default configuration parameters for DuckDB
+    """
+    return {
+        'memory_limit': '4GB',
+        'threads': 4,
+        'worker_threads': 4,
+        'max_temp_directory_size': '40GiB',
+        'temp_directory': '/tmp/duckdb',
+        'enable_object_cache': True,
+    }
+
+
 class DuckLakeConnectionManager:
     """
     Singleton manager for DuckLake connections.
@@ -34,12 +59,19 @@ class DuckLakeConnectionManager:
             cls._instance = super(DuckLakeConnectionManager, cls).__new__(cls)
         return cls._instance
     
-    def get_connection(self, force_new=False):
+    def get_connection(self, force_new=False, duckdb_config=None):
         """
         Get or create a DuckLake connection.
         
         Parameters:
         - force_new: If True, close existing connection and create new one
+        - duckdb_config: Optional dict with DuckDB configuration parameters to override defaults.
+                        If None, uses hardcoded defaults.
+                        Keys: memory_limit, threads, worker_threads, max_temp_directory_size,
+                              temp_directory, enable_object_cache
+                        Defaults: memory_limit='4GB', threads=4, worker_threads=4,
+                                 max_temp_directory_size='40GiB', temp_directory='/tmp/duckdb',
+                                 enable_object_cache=True
         
         Returns:
         - DuckDB connection object
@@ -52,11 +84,11 @@ class DuckLakeConnectionManager:
             self._connection = None
         
         if self._connection is None:
-            self._connection = self._create_connection()
+            self._connection = self._create_connection(duckdb_config=duckdb_config)
         
         return self._connection
     
-    def _create_connection(self):
+    def _create_connection(self, duckdb_config=None):
         """
         Create a new DuckLake connection with RustFS and Postgres.
         Uses Airflow connections if available, otherwise uses environment variables (for Cloud Run).
@@ -117,6 +149,18 @@ class DuckLakeConnectionManager:
         print(f"   ✅ RustFS: {S3_ENDPOINT}")
         print(f"   ✅ Bucket: {RUSTFS_BUCKET}")
     
+        # Get DuckDB configuration (use provided config or defaults)
+        if duckdb_config is None:
+            duckdb_config = _get_default_duckdb_config()
+        else:
+            # Merge provided config with defaults to allow partial overrides
+            default_config = _get_default_duckdb_config()
+            duckdb_config = {**default_config, **duckdb_config}
+        
+        print(f"   ✅ DuckDB Config: memory_limit={duckdb_config['memory_limit']}, "
+              f"threads={duckdb_config['threads']}, "
+              f"worker_threads={duckdb_config['worker_threads']}")
+    
         # Create connection
         con = duckdb.connect()
         
@@ -131,13 +175,14 @@ class DuckLakeConnectionManager:
         con.execute(f"SET s3_use_ssl={RUSTFS_SSL};")
         con.execute("SET s3_url_style='path';")
         con.execute("SET preserve_insertion_order=false;")
-            
-        con.execute("SET memory_limit='4GB';")
-        con.execute("SET threads=4;")
-        con.execute("SET worker_threads=4;")
-        con.execute("SET max_temp_directory_size='40GiB';")
-        con.execute("SET temp_directory='/tmp/duckdb';")
-        con.execute("SET enable_object_cache=true;")
+        
+        # Apply configurable DuckDB parameters
+        con.execute(f"SET memory_limit='{duckdb_config['memory_limit']}';")
+        con.execute(f"SET threads={duckdb_config['threads']};")
+        con.execute(f"SET worker_threads={duckdb_config['worker_threads']};")
+        con.execute(f"SET max_temp_directory_size='{duckdb_config['max_temp_directory_size']}';")
+        con.execute(f"SET temp_directory='{duckdb_config['temp_directory']}';")
+        con.execute(f"SET enable_object_cache={str(duckdb_config['enable_object_cache']).lower()};")
 
         con.execute("SET force_download=false;")
 
@@ -169,7 +214,7 @@ class DuckLakeConnectionManager:
 _connection_manager = DuckLakeConnectionManager()
 
 
-def get_ducklake_connection(force_new=False):
+def get_ducklake_connection(force_new=False, duckdb_config=None):
     """
     Get a reusable DuckLake connection (Singleton pattern).
     
@@ -178,11 +223,19 @@ def get_ducklake_connection(force_new=False):
     
     Parameters:
     - force_new: If True, close existing connection and create new one
+    - duckdb_config: Optional dict with DuckDB configuration parameters to override defaults.
+                    If None, uses hardcoded defaults.
+                    Keys: memory_limit, threads, worker_threads, max_temp_directory_size,
+                          temp_directory, enable_object_cache
+                    Defaults: memory_limit='4GB', threads=4, worker_threads=4,
+                             max_temp_directory_size='40GiB', temp_directory='/tmp/duckdb',
+                             enable_object_cache=True
+                    Example: {'memory_limit': '28GB', 'threads': 8}  # Partial override for 32GiB RAM / 8 CPUs
     
     Returns:
     - DuckDB connection object
     """
-    return _connection_manager.get_connection(force_new=force_new)
+    return _connection_manager.get_connection(force_new=force_new, duckdb_config=duckdb_config)
 
 
 @contextmanager

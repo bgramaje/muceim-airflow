@@ -184,35 +184,55 @@ def execute_cloud_run_job_merge_csv(
             try:
                 execution = executions_client.get_execution(name=execution_name)
                 
-                # Verificar el estado usando el campo reconciling_condition
-                # El estado puede ser: STATE_UNSPECIFIED, ACTIVE, SUCCEEDED, FAILED
-                if not execution.reconciling_condition:
-                    # Aún no hay condición, el job acaba de empezar
+                # Usar el campo 'conditions' que contiene las condiciones del execution
+                # La última condición es la más reciente
+                conditions = getattr(execution, 'conditions', None)
+                if not conditions or len(conditions) == 0:
+                    # Aún no hay condiciones, el job acaba de empezar
                     print(f"[CLOUD_RUN_JOB] Job starting... (elapsed: {int(elapsed_time)}s)")
                     time.sleep(poll_interval)
                     continue
                 
-                state = execution.reconciling_condition.state
+                # Obtener la última condición (la más reciente)
+                latest_condition = conditions[-1]
+                
+                # El estado está en latest_condition.state que es un enum
+                # Execution.Condition.State puede ser: STATE_UNSPECIFIED, ACTIVE, SUCCEEDED, FAILED
+                state = latest_condition.state
                 state_name = state.name if hasattr(state, 'name') else str(state)
                 
+                # También intentar obtener el valor numérico del enum
+                try:
+                    state_value = int(state) if hasattr(state, '__int__') else None
+                except:
+                    state_value = None
+                
+                # Log del estado para debugging
+                print(f"[CLOUD_RUN_JOB] Execution state: {state_name} (value: {state_value})")
+                
                 # Verificar si el job terminó exitosamente
-                if 'SUCCEEDED' in state_name or state == 2:  # Execution.ReconcilingCondition.State.SUCCEEDED = 2
+                # Execution.Condition.State.SUCCEEDED = 2
+                if state_name == 'SUCCEEDED' or 'SUCCEEDED' in str(state_name) or state_value == 2:
                     print(f"[CLOUD_RUN_JOB] ✅ Job completed successfully")
                     break
                 # Verificar si el job falló
-                elif 'FAILED' in state_name or state == 3:  # Execution.ReconcilingCondition.State.FAILED = 3
+                # Execution.Condition.State.FAILED = 3
+                elif state_name == 'FAILED' or 'FAILED' in str(state_name) or state_value == 3:
                     # Obtener más detalles del error
                     error_msg = "Job execution failed"
-                    if hasattr(execution.reconciling_condition, 'message') and execution.reconciling_condition.message:
-                        error_msg = execution.reconciling_condition.message
+                    if hasattr(latest_condition, 'message') and latest_condition.message:
+                        error_msg = latest_condition.message
+                    elif hasattr(latest_condition, 'reason') and latest_condition.reason:
+                        error_msg = f"Failed: {latest_condition.reason}"
                     raise RuntimeError(f"{error_msg}. Execution: {execution_name}")
                 # El job aún está ejecutándose
-                elif 'ACTIVE' in state_name or state == 1:  # Execution.ReconcilingCondition.State.ACTIVE = 1
+                # Execution.Condition.State.ACTIVE = 1
+                elif state_name == 'ACTIVE' or 'ACTIVE' in str(state_name) or state_value == 1:
                     print(f"[CLOUD_RUN_JOB] Job still running... (elapsed: {int(elapsed_time)}s)")
                     time.sleep(poll_interval)
                 else:
                     # Estado desconocido, esperar un poco más
-                    print(f"[CLOUD_RUN_JOB] Job status: {state_name}, waiting... (elapsed: {int(elapsed_time)}s)")
+                    print(f"[CLOUD_RUN_JOB] Job status: {state_name} (value: {state_value}), waiting... (elapsed: {int(elapsed_time)}s)")
                     time.sleep(poll_interval)
                     
             except RuntimeError:
