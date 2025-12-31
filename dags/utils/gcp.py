@@ -145,8 +145,11 @@ def execute_cloud_run_job_merge_csv(
         )
         
         print(f"[CLOUD_RUN_JOB] Executing job at: {job_path}")
-        execution = client.run_job(request=request)
+        operation = client.run_job(request=request)
         
+        # The run_job() call returns an Operation object.
+        # We need to call result() to get the Execution object.
+        execution = operation.result()
         execution_name = execution.name
         print(f"[CLOUD_RUN_JOB] ✅ Job execution started")
         print(f"[CLOUD_RUN_JOB] Execution: {execution_name}")

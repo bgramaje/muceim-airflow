@@ -85,7 +85,8 @@ def get_duckdb_connection():
         sslmode=require connect_timeout=30 keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=5 tcp_user_timeout=30000
     """
 
-    databases = con.execute("SELECT database_name FROM duckdb_databases();").fetchdf()
+    databases = con.execute(
+        "SELECT database_name FROM duckdb_databases();").fetchdf()
     if "ducklake" not in databases["database_name"].values:
         attach_query = f"""
             ATTACH 'ducklake:postgres:{postgres_connection_string}' AS ducklake (DATA_PATH 's3://{RUSTFS_BUCKET}/');
@@ -112,29 +113,31 @@ def _get_data_columns(con, full_table_name):
 
 
 def _build_merge_condition(columns):
-    """Construye una cláusula ON robusta que maneja NULLs correctamente."""
-    return " AND ".join([f"target.{col} IS NOT DISTINCT FROM source.{col}" for col in columns])
-
-
-def _get_csv_source_query_http(url):
     """
-    Genera la subconsulta SELECT para leer el CSV directamente desde HTTP(S).
-    Requiere extensión httpfs cargada en DuckDB.
+    Construye una cláusula ON robusta que maneja NULLs correctamente.
     """
-    filename = os.path.basename(url)
+    return " AND ".join([
+        f"target.{col} IS NOT DISTINCT FROM source.{col}"
+        for col in columns
+    ])
 
-    # read_csv admite URL HTTP(S) con httpfs
+
+def _get_csv_source_query(urls):
+    """
+    Genera la subconsulta SELECT para leer los CSVs.
+    Centraliza la configuración de read_csv.
+    """
+    url_list_str = "[" + ", ".join([f"'{u}'" for u in urls]) + "]"
+
     return f"""
-        SELECT
+        SELECT 
             * EXCLUDE (filename),
             CURRENT_TIMESTAMP AS loaded_at,
-            '{filename}' AS source_file,
-            '{url}' AS source_url
+            filename AS source_file
         FROM read_csv(
-            '{url}',
+            {url_list_str},
             filename = true,
-            all_varchar = true,
-            parallel = false
+            all_varchar = true
         )
     """
 
@@ -167,7 +170,7 @@ def main():
         print(f"[CLOUD_RUN_JOB] Executing merge into {full_table_name}...")
         con.execute(f"""
             MERGE INTO {full_table_name} AS target
-            USING ({_get_csv_source_query_http(url)}) AS source
+            USING ({_get_csv_source_query([url])}) AS source
             ON {_build_merge_condition(merge_keys)}
             WHEN NOT MATCHED THEN
                 INSERT *;
