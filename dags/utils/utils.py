@@ -74,7 +74,6 @@ class DuckLakeConnectionManager:
         POSTGRES_USER = pg_conn.login
         POSTGRES_PASSWORD = pg_conn.password
         
-        # Obtener configuración de RustFS desde Airflow
         s3_conn = BaseHook.get_connection('rustfs_s3_conn')
         s3_extra = s3_conn.extra_dejson
         endpoint_url = s3_extra.get('endpoint_url', 'http://rustfs:9000')

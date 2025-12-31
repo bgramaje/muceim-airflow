@@ -52,6 +52,7 @@ gcloud projects add-iam-policy-binding PROJECT_ID \
 """
 
 from typing import Dict
+import time
 from airflow.models import Variable  # type: ignore
 from airflow.providers.google.cloud.hooks.cloud_run import CloudRunHook  # type: ignore
 from google.cloud import run_v2  # type: ignore
@@ -123,19 +124,12 @@ def execute_cloud_run_job_merge_csv(
     print(f"[CLOUD_RUN_JOB] Environment variables: {env_vars_list}")
     
     try:
-        # Usar CloudRunHook para obtener las credenciales y el cliente
         hook = CloudRunHook(gcp_conn_id=gcp_conn_id)
-        
-        # Obtener las credenciales desde el hook
         credentials = hook.get_credentials()
-        
-        # Crear el cliente de Jobs
         client = run_v2.JobsClient(credentials=credentials)
         
-        # Construir el nombre completo del job
         job_path = f"projects/{project_id}/locations/{region}/jobs/{job_name}"
         
-        # Crear el request para ejecutar el job con overrides
         request = run_v2.RunJobRequest(
             name=job_path,
             overrides=run_v2.RunJobRequest.Overrides(
@@ -150,24 +144,79 @@ def execute_cloud_run_job_merge_csv(
             )
         )
         
-        # Ejecutar el job
         print(f"[CLOUD_RUN_JOB] Executing job at: {job_path}")
-        operation = client.run_job(request=request)
+        execution = client.run_job(request=request)
         
-        # El job se ejecuta de forma asíncrona
-        execution_name = operation.name if hasattr(operation, 'name') else None
+        execution_name = execution.name
         print(f"[CLOUD_RUN_JOB] ✅ Job execution started")
         print(f"[CLOUD_RUN_JOB] Execution: {execution_name}")
+        print(f"[CLOUD_RUN_JOB] Waiting for job to complete...")
         
-        # Nota: El job se ejecutará y terminará automáticamente
-        # No esperamos aquí porque es un job que se ejecuta de forma asíncrona
+        executions_client = run_v2.ExecutionsClient(credentials=credentials)
+        
+        max_wait_time = 3600
+        poll_interval = 10
+        start_time = time.time()
+        
+        while True:
+            # Verificar si hemos excedido el tiempo máximo
+            elapsed_time = time.time() - start_time
+            if elapsed_time > max_wait_time:
+                raise RuntimeError(f"Job execution timed out after {max_wait_time} seconds")
+            
+            # Obtener el estado actualizado de la ejecución
+            try:
+                execution = executions_client.get_execution(name=execution_name)
+                
+                # Verificar el estado usando el campo reconciling_condition
+                # El estado puede ser: STATE_UNSPECIFIED, ACTIVE, SUCCEEDED, FAILED
+                if not execution.reconciling_condition:
+                    # Aún no hay condición, el job acaba de empezar
+                    print(f"[CLOUD_RUN_JOB] Job starting... (elapsed: {int(elapsed_time)}s)")
+                    time.sleep(poll_interval)
+                    continue
+                
+                state = execution.reconciling_condition.state
+                state_name = state.name if hasattr(state, 'name') else str(state)
+                
+                # Verificar si el job terminó exitosamente
+                if 'SUCCEEDED' in state_name or state == 2:  # Execution.ReconcilingCondition.State.SUCCEEDED = 2
+                    print(f"[CLOUD_RUN_JOB] ✅ Job completed successfully")
+                    break
+                # Verificar si el job falló
+                elif 'FAILED' in state_name or state == 3:  # Execution.ReconcilingCondition.State.FAILED = 3
+                    # Obtener más detalles del error
+                    error_msg = "Job execution failed"
+                    if hasattr(execution.reconciling_condition, 'message') and execution.reconciling_condition.message:
+                        error_msg = execution.reconciling_condition.message
+                    raise RuntimeError(f"{error_msg}. Execution: {execution_name}")
+                # El job aún está ejecutándose
+                elif 'ACTIVE' in state_name or state == 1:  # Execution.ReconcilingCondition.State.ACTIVE = 1
+                    print(f"[CLOUD_RUN_JOB] Job still running... (elapsed: {int(elapsed_time)}s)")
+                    time.sleep(poll_interval)
+                else:
+                    # Estado desconocido, esperar un poco más
+                    print(f"[CLOUD_RUN_JOB] Job status: {state_name}, waiting... (elapsed: {int(elapsed_time)}s)")
+                    time.sleep(poll_interval)
+                    
+            except RuntimeError:
+                # Re-lanzar RuntimeError (errores de ejecución)
+                raise
+            except Exception as poll_error:
+                # Si hay un error al obtener el estado, esperar un poco y reintentar
+                print(f"[CLOUD_RUN_JOB] ⚠️ Error checking status: {poll_error}, retrying...")
+                time.sleep(poll_interval)
+        
+        elapsed_time = time.time() - start_time
+        print(f"[CLOUD_RUN_JOB] ✅ Job completed in {int(elapsed_time)} seconds")
         
         return {
             'status': 'success',
             'message': f'Data merged successfully into bronze_{table_name}',
             'table_name': f'bronze_{table_name}',
             'url': url,
-            'execution_name': execution_name
+            'execution_name': execution_name,
+            'execution_time_seconds': int(elapsed_time)
         }
         
     except Exception as e:
