@@ -146,11 +146,12 @@ def _get_csv_source_query(urls):
 def check_url_headers(url):
     """
     Ejecuta curl -I a la URL y loguea el resultado por consola.
+    Valida que la respuesta sea exitosa (2xx o 3xx).
     """
     print(f"[CLOUD_RUN_JOB] Checking URL headers with curl -I: {url}")
     try:
         result = subprocess.run(
-            ["curl", "-I", url],
+            ["curl", "-I", "-s", "-w", "\nHTTP_CODE:%{http_code}", url],
             capture_output=True,
             text=True,
             timeout=30
@@ -163,6 +164,21 @@ def check_url_headers(url):
         if result.stderr:
             print(f"[CLOUD_RUN_JOB] curl stderr:")
             print(result.stderr)
+        
+        # Extraer código HTTP si está disponible
+        if "HTTP_CODE:" in result.stdout:
+            http_code = result.stdout.split("HTTP_CODE:")[-1].strip()
+            http_code_int = int(http_code) if http_code.isdigit() else None
+            
+            if http_code_int:
+                if 200 <= http_code_int < 300:
+                    print(f"[CLOUD_RUN_JOB] ✅ URL is accessible (HTTP {http_code_int})")
+                elif 300 <= http_code_int < 400:
+                    print(f"[CLOUD_RUN_JOB] ⚠️ URL redirects (HTTP {http_code_int})")
+                elif 400 <= http_code_int < 500:
+                    print(f"[CLOUD_RUN_JOB] ❌ Client error: HTTP {http_code_int} - Check the URL")
+                elif http_code_int >= 500:
+                    print(f"[CLOUD_RUN_JOB] ❌ Server error: HTTP {http_code_int} - The remote server is failing")
             
     except subprocess.TimeoutExpired:
         print(f"[CLOUD_RUN_JOB] ⚠️ curl -I timed out after 30 seconds")
@@ -173,6 +189,32 @@ def check_url_headers(url):
 def main():
     """Función principal del Cloud Run Job."""
     try:
+        # Verificar acceso a internet primero
+        print("[CLOUD_RUN_JOB] Testing internet connectivity with Google...")
+        test_result = subprocess.run(
+            ["curl", "-I", "-s", "-w", "\nHTTP_CODE:%{http_code}", "https://www.google.com"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        print(f"[CLOUD_RUN_JOB] Google test - exit code: {test_result.returncode}")
+        print(f"[CLOUD_RUN_JOB] Google test - output:")
+        print(test_result.stdout)
+        
+        if "HTTP_CODE:200" in test_result.stdout:
+            print("[CLOUD_RUN_JOB] ✅ Internet access confirmed - Google returned HTTP 200")
+        elif "HTTP_CODE:" in test_result.stdout:
+            http_code = test_result.stdout.split("HTTP_CODE:")[-1].strip()
+            print(f"[CLOUD_RUN_JOB] ⚠️ Google returned HTTP {http_code}")
+        else:
+            print("[CLOUD_RUN_JOB] ⚠️ Could not determine HTTP status from Google test")
+        
+        if test_result.stderr:
+            print(f"[CLOUD_RUN_JOB] Google test - stderr: {test_result.stderr}")
+        
+        print("\n" + "="*60 + "\n")
+        
         table_name = os.environ.get("TABLE_NAME")
         url = os.environ.get("URL")
         zone_type = os.environ.get("ZONE_TYPE", "distritos")

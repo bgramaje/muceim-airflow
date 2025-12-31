@@ -111,6 +111,12 @@ Primero, necesitas tener el código en un repositorio accesible:
 
 6. **VPC Connector** (si PostgreSQL/RustFS están en una VPC):
    - Si tus recursos están en una VPC privada, configura un VPC Connector
+   - ⚠️ **IMPORTANTE - Acceso a Internet**: Si configuras un VPC Connector, también debes configurar el **VPC egress**:
+     - **VPC egress**: Selecciona **"All traffic"** o **"Private ranges"** según tus necesidades
+     - Si seleccionas **"All traffic"**, el tráfico a internet pasará por la VPC (necesitarás NAT Gateway)
+     - Si solo necesitas acceso a recursos privados, selecciona **"Private ranges"** y mantén el acceso directo a internet público
+     - Si no configuras esto correctamente, el job **NO podrá acceder a internet** (por ejemplo, para descargar CSVs desde URLs públicas)
+     - Ver más detalles en la sección "⚠️ Configuración de Red y Acceso a Internet" más abajo
 
 7. Haz clic en **CREATE**
 
@@ -130,6 +136,127 @@ gcloud projects add-iam-policy-binding muceim-bigdata \
 El job se ejecuta automáticamente desde Airflow usando la función `execute_cloud_run_job_merge_csv()` en `dags/utils/gcp.py`.
 
 Las variables de entorno `TABLE_NAME`, `URL`, y `ZONE_TYPE` se pasan automáticamente desde Airflow.
+
+## ⚠️ Configuración de Acceso a Internet
+
+**NOTA**: Si ves `curl exit code: 0` pero recibes `HTTP 500` u otros códigos de error HTTP, Cloud Run **SÍ tiene acceso a internet**. El problema es que el servidor remoto está fallando, no la configuración de Cloud Run.
+
+Si tu Cloud Run job no puede acceder a internet (por ejemplo, `curl` falla con errores de conexión o DNS):
+
+### Verificación Inicial
+
+Primero, verifica si tienes VPC Connector configurado:
+
+```bash
+gcloud run jobs describe insert-ducklake \
+  --region=europe-southwest1 \
+  --format="get(template.template.vpcAccess.connector)"
+```
+
+- Si devuelve un valor (nombre de connector): Tienes VPC configurado → ve a "Solución A"
+- Si está vacío: No tienes VPC → ve a "Solución B"
+
+---
+
+### Solución A: Si tienes VPC Connector configurado
+
+Si tus recursos están en servicios externos accesibles por internet (no en una VPC privada de Google Cloud), **NO necesitas VPC Connector**. Remuévelo:
+
+#### Desde la Consola de Google Cloud
+
+1. Ve a [Cloud Run Jobs](https://console.cloud.google.com/run/jobs)
+2. Haz clic en tu job (`insert-ducklake`)
+3. Haz clic en **EDIT**
+4. Expande **Networking, Security, Limits & Admin**
+5. En **VPC connector**, cambia a **"No VPC connector"**
+6. Haz clic en **SAVE**
+
+#### Desde línea de comandos
+
+```bash
+gcloud run jobs update insert-ducklake \
+  --region=europe-southwest1 \
+  --clear-vpc-connector
+```
+
+---
+
+### Solución B: Si NO tienes VPC Connector (y aún así no funciona) 🔍
+
+**Si verificaste que `vpcAccess: null` y aún así no funciona**, sigue estos pasos de diagnóstico:
+
+#### 1. Organization Policies
+
+Revisa si hay políticas de organización que bloqueen el acceso a internet:
+
+```bash
+# Verificar constraints de red
+gcloud resource-manager org-policies list \
+  --project=TU_PROJECT_ID \
+  --format="table(constraint)"
+```
+
+Busca políticas relacionadas con `compute.vmCanIpForward` o `compute.restrictVpcPeering`.
+
+#### 2. Firewall Rules
+
+Verifica que no haya reglas de firewall bloqueando el tráfico saliente (aunque Cloud Run no debería verse afectado por firewall rules de VPC).
+
+#### 3. Service Account Permissions
+
+Asegúrate de que la Service Account del job tenga los permisos necesarios (aunque esto no debería afectar el acceso a internet).
+
+#### 4. Revisar Logs del Job ⚠️ IMPORTANTE
+
+Revisa los logs del Cloud Run job para ver el error específico que está dando `curl`:
+
+```bash
+# Ver logs del job
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=insert-ducklake" \
+  --limit=50 \
+  --format="table(timestamp,textPayload)"
+
+# O filtrar solo errores de curl
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=insert-ducklake AND textPayload=~\"curl\"" \
+  --limit=20 \
+  --format="table(timestamp,textPayload)"
+```
+
+O desde la consola: [Cloud Run Jobs > insert-ducklake > Logs](https://console.cloud.google.com/run/jobs)
+
+**Busca estos errores comunes:**
+- `curl: (6) Could not resolve host` → Problema de DNS
+- `curl: (7) Failed to connect` → No puede conectar (firewall/proxy)
+- `curl: (28) Timeout` → Timeout después de 30 segundos
+- `curl: (35) SSL connect error` → Problema con SSL/TLS
+
+#### 5. Probar con un job de prueba simple
+
+Crea un job de prueba mínimo para verificar el acceso a internet:
+
+```python
+import subprocess
+result = subprocess.run(["curl", "-I", "https://www.google.com"], capture_output=True, text=True)
+print(result.stdout)
+print(result.stderr)
+```
+
+---
+
+### Si necesitas VPC Connector (solo si tus recursos están en una VPC privada)
+
+Si necesitas acceder a recursos privados en tu VPC **Y** también necesitas internet:
+
+1. Ve a la consola
+2. En **VPC egress**, selecciona **"Private ranges"**
+3. Esto permite: acceso a internet público directo + acceso a rangos privados vía VPC
+
+O desde línea de comandos:
+```bash
+gcloud run jobs update insert-ducklake \
+  --region=europe-southwest1 \
+  --vpc-egress=private-ranges-only
+```
 
 ## Testing local
 
