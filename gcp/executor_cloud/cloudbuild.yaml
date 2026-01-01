@@ -1,0 +1,24 @@
+steps:
+  # Copiar requirements.txt del nivel superior al directorio gcp/executor_cloud
+  - name: 'bash'
+    args: ['-c', 'cp requirements.txt gcp/executor_cloud/requirements.txt']
+  
+  # Copiar utils.py desde dags/utils al directorio gcp/executor_cloud
+  - name: 'bash'
+    args: ['-c', 'cp dags/utils/utils.py gcp/executor_cloud/utils.py']
+  
+  - name: 'gcr.io/cloud-builders/docker'
+    dir: 'gcp/executor_cloud'
+    args: ['build', '-t', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/ducklake-executor:latest', '.']
+  
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/ducklake-executor:latest']
+
+# Imágenes a crear
+images:
+  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/ducklake-executor:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+

@@ -89,8 +89,8 @@ def create_tg_od(zone_type: str):
             BRONZE_mitma_od_insert.override(
                 task_id="od_insert",
                 pool="default_pool", 
-                max_active_tis_per_dag=1,
-                pool_slots=default_pool_slots,
+                # max_active_tis_per_dag=1,
+                # pool_slots=default_pool_slots,
             )
             .partial(zone_type=zone_type)
             .expand(download_result=od_download)

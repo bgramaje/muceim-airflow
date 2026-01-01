@@ -113,11 +113,7 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
     - Ruta S3 en formato s3://mitma-raw/{dataset}/{zone_type}/{filename}
     """
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-    from airflow.models import Variable
-    
-    print(f"[DOWNLOAD] Downloading {url} to RustFS...")
-    
-    # Extraer nombre de archivo de la URL
+        
     parsed_url = urllib.parse.urlparse(url)
     filename = os.path.basename(parsed_url.path)
     
@@ -132,47 +128,25 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
     
     s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
     
-    # Asegurar que el bucket existe primero
-    bucket_exists = False
     try:
         bucket_exists = s3_hook.check_for_bucket(RUSTFS_RAW_BUCKET)
         if not bucket_exists:
-            print(f"[DOWNLOAD] Bucket '{RUSTFS_RAW_BUCKET}' does not exist, creating it...")
             s3_hook.create_bucket(bucket_name=RUSTFS_RAW_BUCKET)
-            print(f"[DOWNLOAD] ✅ Bucket '{RUSTFS_RAW_BUCKET}' created successfully")
-            bucket_exists = True
         else:
             print(f"[DOWNLOAD] ✅ Bucket '{RUSTFS_RAW_BUCKET}' exists")
     except Exception as bucket_error:
-        # Si falla el check, intentar crear de todos modos
-        print(f"[DOWNLOAD] ⚠️ Error checking bucket, attempting to create if needed: {bucket_error}")
-        try:
-            s3_hook.create_bucket(bucket_name=RUSTFS_RAW_BUCKET)
-            print(f"[DOWNLOAD] ✅ Bucket '{RUSTFS_RAW_BUCKET}' created successfully")
-            bucket_exists = True
-        except Exception as create_error:
-            # Si falla la creación, puede que el bucket ya exista
-            print(f"[DOWNLOAD] ⚠️ Bucket creation failed (assuming it exists): {create_error}")
-            bucket_exists = True  # Asumir que existe para continuar
+        print(f"[DOWNLOAD] ⚠️ Error checking bucket: {bucket_error}")
+        raise bucket_error
     
-    # Si el bucket existe, verificar si el archivo ya está descargado
-    if bucket_exists:
-        try:
-            file_exists = s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET)
-            if file_exists:
-                print(f"[DOWNLOAD] ✅ File already exists in RustFS: {s3_path}")
-                print(f"[DOWNLOAD] Skipping download, returning existing S3 path")
-                return s3_path
-            else:
-                print(f"[DOWNLOAD] File does not exist in RustFS, will download...")
-        except Exception as check_error:
-            # Si falla la verificación, asumir que no existe y continuar con la descarga
-            print(f"[DOWNLOAD] ⚠️ Could not verify if file exists (will download): {check_error}")
+    file_exists = s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET)
+    if file_exists:
+        print(f"[DOWNLOAD] ✅ File already exists in RustFS: {s3_path}")
+        return s3_path
     
-    # Descargar archivo desde URL con User-Agent
     print(f"[DOWNLOAD] Downloading from URL...")
     req = urllib.request.Request(url, headers={"User-Agent": "MITMA-DuckLake-Loader"})
     
+    file_content = None
     try:
         with urllib.request.urlopen(req, timeout=300) as response:
             file_content = response.read()
@@ -180,7 +154,6 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
     except Exception as e:
         raise RuntimeError(f"Failed to download file from {url}: {e}")
     
-    # Subir a RustFS
     print(f"[DOWNLOAD] Uploading to RustFS bucket '{RUSTFS_RAW_BUCKET}'...")
     try:
         s3_hook.load_bytes(
@@ -192,6 +165,9 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
         print(f"[DOWNLOAD] ✅ Successfully uploaded to {s3_path}")
     except Exception as e:
         raise RuntimeError(f"Failed to upload file to RustFS: {e}")
+    finally:
+        if file_content is not None:
+            del file_content
     
     return s3_path
 

@@ -9,14 +9,14 @@ steps:
   
   - name: 'gcr.io/cloud-builders/docker'
     dir: 'gcp/ingestor_cloud'
-    args: ['build', '-t', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest', '.']
+    args: ['build', '-t', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/ducklake-ingestor:latest', '.']
   
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest']
+    args: ['push', 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/ducklake-ingestor:latest']
 
 # Imágenes a crear
 images:
-  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/insert-ducklake:latest'
+  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/ducklake-ingestor:latest'
 
 options:
   machineType: 'E2_HIGHCPU_8'
