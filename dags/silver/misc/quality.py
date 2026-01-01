@@ -1,132 +1,294 @@
-import sys
-import os
-from airflow.sdk import task  # type: ignore
+"""
+Airflow tasks for building the silver_od_quality table.
+Includes batch processing with dynamic task mapping for large datasets.
+Processes dates that are in silver_od but not yet processed in silver_od_quality.
+"""
 
-# Add parent directory to path to import utils
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from airflow.sdk import task
+from typing import List, Dict, Any
 
+from utils.gcp import execute_cloud_run_job_sql
 from utils.utils import get_ducklake_connection
 
 
 @task
-def SILVER_od_quality():
+def SILVER_od_quality_get_date_batches(batch_size: int = 30, **context) -> List[Dict[str, Any]]:
     """
-    Build silver_od_quality table optimized for DuckDB with large datasets (GBs).
+    Obtiene las fechas únicas de silver_od_processed_dates que aún no están en silver_od_quality,
+    y las divide en batches. Usa la diferencia entre las fechas procesadas y las que ya están en quality.
     
-    Optimizations:
-    1. Single-pass statistics calculation (no window functions)
-    2. Optimized JOIN with explicit join order hints
-    3. Materialized intermediate tables to reduce memory pressure
-    4. Efficient CROSS JOIN with 1-row stats table (DuckDB optimizes automatically)
-    5. Uses DuckDB-specific optimizations (preserve_insertion_order=false, etc.)
+    Parameters:
+    - batch_size: Número de fechas por batch (default: 30)
+    
+    Returns:
+    - Lista de diccionarios con 'fechas' (lista de fechas) y 'batch_index' para cada batch
     """
-    print("[TASK] Building silver_od_quality table (DuckDB-optimized for large datasets)")
-    print("[TASK] Using memory settings from utils.py (4GB limit, 4 threads)")
-
+    print(f"[TASK] Getting unprocessed quality dates (batch_size: {batch_size})")
+    
     con = get_ducklake_connection()
     
-    # DuckDB-specific optimizations for large tables
-    print("[TASK] Applying DuckDB optimizations for large datasets...")
-    con.execute("SET enable_progress_bar=false;")  # Reduce overhead
-    con.execute("SET preserve_insertion_order=false;")  # Allow reordering for performance
-    con.execute("SET default_null_order='nulls_last';")  # Optimize NULL handling
-    con.execute("SET enable_object_cache=true;")  # Cache metadata for better performance
+    # Obtener fechas que están en silver_od_processed_dates pero no en silver_od_quality
+    query = """
+        SELECT DISTINCT 
+            pod.fecha
+        FROM silver_od_processed_dates pod
+        WHERE pod.fecha IS NOT NULL
+            AND pod.fecha NOT IN (
+                SELECT DISTINCT strftime(fecha, '%Y%m%d')
+                FROM silver_od_quality
+                WHERE fecha IS NOT NULL
+            )
+        ORDER BY pod.fecha
+    """
     
-    print("[TASK] Step 1/3: Creating enriched metrics table (optimized JOIN)...")
-    con.execute("""
-        CREATE OR REPLACE TABLE _temp_od_enriched AS
-        SELECT
-            od.fecha,
-            od.origen_zone_id,
-            od.destino_zone_id,
-            od.residencia,
-            od.viajes,
-            od.viajes_km,
-            od.distancia,
-            ine.poblacion_total,
-            -- Calculate metrics directly in single pass (no CTE overhead)
-            CASE 
-                WHEN ine.poblacion_total > 0 THEN od.viajes / ine.poblacion_total
-                ELSE NULL
-            END AS viajes_per_capita,
-            CASE 
-                WHEN ine.poblacion_total > 0 THEN od.viajes_km / ine.poblacion_total
-                ELSE NULL
-            END AS km_per_capita
-        FROM silver_od od
-        LEFT JOIN silver_ine_all ine
-            ON od.origen_zone_id = ine.id
-    """)
+    try:
+        df = con.execute(query).fetchdf()
+        
+        if df.empty:
+            print("[TASK] ⚠️ No unprocessed quality dates found")
+            return []
+        
+        fechas = [str(fecha) for fecha in df['fecha'].unique()]
+        fechas = sorted(fechas)
+        
+        if not fechas:
+            print("[TASK] ⚠️ No valid unprocessed quality dates found")
+            return []
+        
+        print(f"[TASK] Total unprocessed quality dates: {len(fechas)}")
+        
+        batches = []
+        batch_index = 0
+        
+        for i in range(0, len(fechas), batch_size):
+            batch_fechas = fechas[i:i + batch_size]
+            
+            batches.append({
+                'batch_index': batch_index,
+                'fechas': batch_fechas
+            })
+            
+            batch_index += 1
+        
+        print(f"[TASK] Created {len(batches)} batches")
+        for i, batch in enumerate(batches, 1):
+            print(f"[TASK]   Batch {i}: {len(batch['fechas'])} dates (from {batch['fechas'][0]} to {batch['fechas'][-1]})")
+        
+        return batches
+        
+    except Exception as e:
+        print(f"[TASK] ❌ Error getting date batches: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+@task
+def SILVER_od_quality_create_table(**context) -> Dict:
+    """
+    Crea la tabla silver_od_quality si no existe.
+    Esta tarea debe ejecutarse antes de procesar los batches.
+    Hace el proceso idempotente al no reemplazar tablas existentes.
+    No necesita tabla de tracking separada, usa la diferencia con silver_od_processed_dates.
     
-    # Get row count for logging
-    count_enriched = con.execute("SELECT COUNT(*) FROM _temp_od_enriched").fetchone()[0]
-    print(f"[TASK] Enriched table created with {count_enriched:,} rows")
+    Returns:
+    - Dict con status de la creación de la tabla
+    """
+    print("[TASK] Creating silver_od_quality table if it doesn't exist")
     
-    # Step 2: Calculate global statistics efficiently
-    print("[TASK] Step 2/3: Calculating global statistics (single aggregation)...")
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE _temp_stats AS
+    con = get_ducklake_connection()
+    
+    sql_query = """
+        -- DuckDB optimizations for large datasets
+        SET enable_progress_bar=false;
+        SET preserve_insertion_order=false;
+        SET default_null_order='nulls_last';
+        SET enable_object_cache=true;
+        
+        -- Crear tabla silver_od_quality si no existe (idempotente)
+        CREATE TABLE IF NOT EXISTS silver_od_quality (
+            fecha TIMESTAMP,
+            origen_zone_id VARCHAR,
+            destino_zone_id VARCHAR,
+            residencia VARCHAR,
+            viajes_per_capita DOUBLE,
+            km_per_capita DOUBLE,
+            flag_negative_viajes BOOLEAN,
+            flag_negative_viajes_km BOOLEAN,
+            z_viajes_per_capita DOUBLE,
+            flag_outlier_viajes_per_capita BOOLEAN
+        );
+    """
+    
+    con.execute(sql_query)
+    
+    print("[TASK] ✅ Tables created/verified successfully")
+    
+    return {
+        "status": "success",
+        "table": "silver_od_quality"
+    }
+
+
+@task
+def SILVER_od_quality_process_batch(date_batch: Dict[str, Any], **context) -> Dict:
+    """
+    Procesa un batch de fechas de silver_od y hace MERGE en silver_od_quality.
+    Calcula métricas de calidad y z-scores usando estadísticas globales.
+    Cada batch se procesa en paralelo usando dynamic task mapping.
+    
+    Parameters:
+    - date_batch: Dict con 'fechas' (lista de fechas) y 'batch_index'
+    
+    Returns:
+    - Dict con status y metadata del batch procesado
+    """
+    print(f"[TASK] DEBUG: date_batch type: {type(date_batch)}")
+    print(f"[TASK] DEBUG: date_batch content: {date_batch}")
+    
+    # Handle both dict and direct list cases
+    if isinstance(date_batch, dict):
+        fechas = date_batch.get('fechas', [])
+        batch_index = date_batch.get('batch_index', 0)
+    elif isinstance(date_batch, list):
+        fechas = date_batch
+        batch_index = 0
+    else:
+        raise ValueError(f"Unexpected date_batch type: {type(date_batch)}, value: {date_batch}")
+    
+    if not fechas:
+        raise ValueError(f"No fechas found in date_batch: {date_batch}")
+    
+    # Crear lista de fechas para la query
+    fechas_str = "', '".join(str(f) for f in fechas)
+    
+    print(f"[TASK] Processing quality batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
+    
+    sql_query = f"""
+        -- DuckDB optimizations for large datasets
+        SET enable_progress_bar=false;
+        SET preserve_insertion_order=false;
+        SET default_null_order='nulls_last';
+        SET enable_object_cache=true;
+        
+        -- Calcular estadísticas globales sobre todos los datos existentes en silver_od
+        CREATE OR REPLACE TEMP TABLE _temp_global_stats AS
+        WITH enriched AS (
+            SELECT
+                DATE(od.fecha)::VARCHAR AS fecha_str,
+                od.origen_zone_id,
+                od.destino_zone_id,
+                od.residencia,
+                od.viajes,
+                od.viajes_km,
+                ine.poblacion_total,
+                CASE 
+                    WHEN ine.poblacion_total > 0 THEN od.viajes / ine.poblacion_total
+                    ELSE NULL
+                END AS viajes_per_capita
+            FROM silver_od od
+            LEFT JOIN silver_ine_all ine
+                ON od.origen_zone_id = ine.id
+            WHERE 
+                od.viajes IS NOT NULL
+                AND od.viajes_km IS NOT NULL
+        )
         SELECT 
             COALESCE(AVG(viajes_per_capita), 0.0) AS avg_viajes,
             COALESCE(NULLIF(STDDEV_SAMP(viajes_per_capita), 0), 1.0) AS stddev_viajes
-        FROM _temp_od_enriched
-        WHERE viajes_per_capita IS NOT NULL
-    """)
-    
-    # Get stats for logging
-    stats = con.execute("SELECT avg_viajes, stddev_viajes FROM _temp_stats").fetchone()
-    print(f"[TASK] Global stats - Avg: {stats[0]:.4f}, StdDev: {stats[1]:.4f}")
-
-    # Step 3: Create final quality table
-    # CROSS JOIN with 1-row table is highly optimized by DuckDB (broadcast join)
-    # DuckDB automatically broadcasts small tables, making this very efficient
-    # No need for parameterized queries - CROSS JOIN is the most efficient approach
-    print("[TASK] Step 3/3: Creating final quality table (optimized CROSS JOIN)...")
-    
-    try:
-        con.execute("""
-            CREATE OR REPLACE TABLE silver_od_quality AS
-            WITH stats AS (
-                SELECT avg_viajes, stddev_viajes FROM _temp_stats
+        FROM enriched
+        WHERE viajes_per_capita IS NOT NULL;
+        
+        -- MERGE datos del batch en silver_od_quality
+        MERGE INTO silver_od_quality AS target
+        USING (
+            WITH enriched AS (
+                SELECT
+                    od.fecha,
+                    od.origen_zone_id,
+                    od.destino_zone_id,
+                    od.residencia,
+                    od.viajes,
+                    od.viajes_km,
+                    ine.poblacion_total,
+                    CASE 
+                        WHEN ine.poblacion_total > 0 THEN od.viajes / ine.poblacion_total
+                        ELSE NULL
+                    END AS viajes_per_capita,
+                    CASE 
+                        WHEN ine.poblacion_total > 0 THEN od.viajes_km / ine.poblacion_total
+                        ELSE NULL
+                    END AS km_per_capita
+                FROM silver_od od
+                LEFT JOIN silver_ine_all ine
+                    ON od.origen_zone_id = ine.id
+                WHERE 
+                    strftime(od.fecha, '%Y%m%d') IN ('{fechas_str}')
+                    AND od.viajes IS NOT NULL
+                    AND od.viajes_km IS NOT NULL
+            ),
+            with_zscore AS (
+                SELECT
+                    e.fecha,
+                    e.origen_zone_id,
+                    e.destino_zone_id,
+                    e.residencia,
+                    e.viajes_per_capita,
+                    e.km_per_capita,
+                    e.viajes < 0 AS flag_negative_viajes,
+                    e.viajes_km < 0 AS flag_negative_viajes_km,
+                    CASE 
+                        WHEN e.viajes_per_capita IS NOT NULL AND s.stddev_viajes > 0
+                        THEN (e.viajes_per_capita - s.avg_viajes) / s.stddev_viajes
+                        ELSE NULL
+                    END AS z_viajes_per_capita
+                FROM enriched e
+                CROSS JOIN _temp_global_stats s
             )
             SELECT
-                e.fecha,
-                e.origen_zone_id,
-                e.destino_zone_id,
-                e.residencia,
-                -- metrics
-                e.viajes_per_capita,
-                e.km_per_capita,
-                -- flags determinísticos (calculated once, no subqueries)
-                e.viajes < 0 AS flag_negative_viajes,
-                e.viajes_km < 0 AS flag_negative_viajes_km,
-                -- z-scores (using pre-calculated statistics - single pass calculation)
-                -- DuckDB optimizes CROSS JOIN with 1-row table automatically
+                fecha,
+                origen_zone_id,
+                destino_zone_id,
+                residencia,
+                viajes_per_capita,
+                km_per_capita,
+                flag_negative_viajes,
+                flag_negative_viajes_km,
+                z_viajes_per_capita,
                 CASE 
-                    WHEN e.viajes_per_capita IS NOT NULL AND s.stddev_viajes > 0
-                    THEN (e.viajes_per_capita - s.avg_viajes) / s.stddev_viajes
-                    ELSE NULL
-                END AS z_viajes_per_capita,
-                -- flags de outliers
-                CASE 
-                    WHEN e.viajes_per_capita IS NOT NULL AND s.stddev_viajes > 0
-                    THEN ABS((e.viajes_per_capita - s.avg_viajes) / s.stddev_viajes) > 3
+                    WHEN z_viajes_per_capita IS NOT NULL 
+                    THEN ABS(z_viajes_per_capita) > 3
                     ELSE FALSE
                 END AS flag_outlier_viajes_per_capita
-            FROM _temp_od_enriched e
-            CROSS JOIN stats s
-        """)
-    except Exception as e:
-        pass
+            FROM with_zscore
+        ) AS source
+        ON target.fecha = source.fecha
+            AND target.origen_zone_id = source.origen_zone_id
+            AND target.destino_zone_id = source.destino_zone_id
+            AND target.residencia = source.residencia
+        WHEN MATCHED THEN
+            UPDATE SET
+                viajes_per_capita = source.viajes_per_capita,
+                km_per_capita = source.km_per_capita,
+                flag_negative_viajes = source.flag_negative_viajes,
+                flag_negative_viajes_km = source.flag_negative_viajes_km,
+                z_viajes_per_capita = source.z_viajes_per_capita,
+                flag_outlier_viajes_per_capita = source.flag_outlier_viajes_per_capita
+        WHEN NOT MATCHED THEN
+            INSERT (fecha, origen_zone_id, destino_zone_id, residencia, viajes_per_capita, km_per_capita, flag_negative_viajes, flag_negative_viajes_km, z_viajes_per_capita, flag_outlier_viajes_per_capita)
+            VALUES (source.fecha, source.origen_zone_id, source.destino_zone_id, source.residencia, source.viajes_per_capita, source.km_per_capita, source.flag_negative_viajes, source.flag_negative_viajes_km, source.z_viajes_per_capita, source.flag_outlier_viajes_per_capita);
+    """
     
-    # Get final count
-    count = con.execute("SELECT COUNT(*) AS count FROM silver_od_quality").fetchdf()
-    record_count = int(count.iloc[0]['count'])
+    result = execute_cloud_run_job_sql(sql_query=sql_query, **context)
     
-    print(f"[TASK] Created silver_od_quality with {record_count:,} records")
-
+    print(f"[TASK] ✅ Quality batch {batch_index} processed successfully: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
+    
     return {
         "status": "success",
-        "table": "silver_od_quality",
-        "records": record_count
+        "batch": date_batch,
+        "batch_index": batch_index,
+        "execution_name": result.get("execution_name"),
+        "execution_time_seconds": result.get("execution_time_seconds")
     }
+
+

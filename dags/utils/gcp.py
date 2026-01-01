@@ -261,3 +261,167 @@ def execute_cloud_run_job_merge_csv(
         import traceback
         print(f"[CLOUD_RUN_JOB] Traceback: {traceback.format_exc()}")
         raise RuntimeError(error_msg) from e
+
+
+def execute_cloud_run_job_sql(
+    sql_query: str,
+    **context
+) -> Dict:
+    """
+    Ejecuta un Cloud Run Job para ejecutar una consulta SQL en DuckDB.
+    
+    Esta función ejecuta un Cloud Run Job que:
+    1. Se conecta a DuckLake
+    2. Ejecuta la consulta SQL proporcionada
+    3. Se ejecuta y termina automáticamente
+    
+    Parameters:
+    - sql_query: Consulta SQL a ejecutar (puede contener múltiples sentencias separadas por ;)
+    - **context: Contexto de Airflow (se pasa automáticamente)
+    
+    Returns:
+    - Dict con información del resultado
+    
+    Raises:
+    - ValueError: Si falta configuración requerida
+    - RuntimeError: Si el job falla
+    
+    Required Airflow Variables:
+    - GCP_CLOUD_RUN_EXECUTOR_JOB_NAME: Nombre del Cloud Run Job executor (default: 'ducklake-executor')
+    - GCP_CLOUD_RUN_REGION: Región donde está el Job
+    - GCP_PROJECT_ID: ID del proyecto de GCP
+    """
+    from airflow.models import Variable  # type: ignore
+    from airflow.providers.google.cloud.hooks.cloud_run import CloudRunHook  # type: ignore
+    from google.cloud import run_v2  # type: ignore
+    import time
+    
+    # Get configuration from Airflow Variables
+    job_name = Variable.get('GCP_CLOUD_RUN_EXECUTOR_JOB_NAME', default_var='ducklake-executor')
+    region = Variable.get('GCP_CLOUD_RUN_REGION', default_var=None)
+    project_id = Variable.get('GCP_PROJECT_ID', default_var=None)
+    gcp_conn_id = Variable.get('GCP_CONNECTION_ID', default_var='google_cloud_default')
+    
+    if not region:
+        raise ValueError(
+            "GCP_CLOUD_RUN_REGION Airflow Variable must be set. "
+            "Please set it to your job region (e.g., 'europe-southwest1')"
+        )
+    
+    if not project_id:
+        raise ValueError(
+            "GCP_PROJECT_ID Airflow Variable must be set. "
+            "Please set it to your GCP project ID"
+        )
+    
+    if not sql_query or not sql_query.strip():
+        raise ValueError("SQL query cannot be empty")
+    
+    env_vars_list = [
+        {'name': 'SQL_QUERY', 'value': sql_query},
+    ]
+    
+    print(f"[CLOUD_RUN_JOB] Executing SQL job: {job_name}")
+    print(f"[CLOUD_RUN_JOB] Region: {region}, Project: {project_id}")
+    print(f"[CLOUD_RUN_JOB] SQL query preview (first 200 chars): {sql_query[:200]}...")
+    
+    try:
+        hook = CloudRunHook(gcp_conn_id=gcp_conn_id)
+        credentials = hook.get_credentials()
+        client = run_v2.JobsClient(credentials=credentials)
+        
+        job_path = f"projects/{project_id}/locations/{region}/jobs/{job_name}"
+        
+        request = run_v2.RunJobRequest(
+            name=job_path,
+            overrides=run_v2.RunJobRequest.Overrides(
+                container_overrides=[
+                    run_v2.RunJobRequest.Overrides.ContainerOverride(
+                        env=[
+                            run_v2.EnvVar(name=env['name'], value=env['value'])
+                            for env in env_vars_list
+                        ]
+                    )
+                ]
+            )
+        )
+        
+        print(f"[CLOUD_RUN_JOB] Executing job at: {job_path}")
+        operation = client.run_job(request=request)
+        
+        execution = operation.result()
+        execution_name = execution.name
+        print(f"[CLOUD_RUN_JOB] ✅ Job execution started")
+        print(f"[CLOUD_RUN_JOB] Execution: {execution_name}")
+        print(f"[CLOUD_RUN_JOB] Waiting for job to complete...")
+        
+        executions_client = run_v2.ExecutionsClient(credentials=credentials)
+        
+        max_wait_time = 3600
+        poll_interval = 10
+        start_time = time.time()
+        
+        while True:
+            elapsed_time = time.time() - start_time
+            if elapsed_time > max_wait_time:
+                raise RuntimeError(f"Job execution timed out after {max_wait_time} seconds")
+            
+            try:
+                execution = executions_client.get_execution(name=execution_name)
+                
+                conditions = getattr(execution, 'conditions', None)
+                if not conditions or len(conditions) == 0:
+                    print(f"[CLOUD_RUN_JOB] Job starting... (elapsed: {int(elapsed_time)}s)")
+                    time.sleep(poll_interval)
+                    continue
+                
+                latest_condition = conditions[-1]
+                state = latest_condition.state
+                state_name = state.name if hasattr(state, 'name') else str(state)
+                
+                try:
+                    state_value = int(state) if hasattr(state, '__int__') else None
+                except:
+                    state_value = None
+                
+                print(f"[CLOUD_RUN_JOB] Execution state: {state_name} (value: {state_value})")
+                
+                if state_name == 'SUCCEEDED' or 'SUCCEEDED' in str(state_name) or state_value == 2:
+                    print(f"[CLOUD_RUN_JOB] ✅ Job completed successfully")
+                    break
+                elif state_name == 'FAILED' or 'FAILED' in str(state_name) or state_value == 3:
+                    error_msg = "Job execution failed"
+                    if hasattr(latest_condition, 'message') and latest_condition.message:
+                        error_msg = latest_condition.message
+                    elif hasattr(latest_condition, 'reason') and latest_condition.reason:
+                        error_msg = f"Failed: {latest_condition.reason}"
+                    raise RuntimeError(f"{error_msg}. Execution: {execution_name}")
+                elif state_name == 'ACTIVE' or 'ACTIVE' in str(state_name) or state_value == 1:
+                    print(f"[CLOUD_RUN_JOB] Job still running... (elapsed: {int(elapsed_time)}s)")
+                    time.sleep(poll_interval)
+                else:
+                    print(f"[CLOUD_RUN_JOB] Job status: {state_name} (value: {state_value}), waiting... (elapsed: {int(elapsed_time)}s)")
+                    time.sleep(poll_interval)
+                    
+            except RuntimeError:
+                raise
+            except Exception as poll_error:
+                print(f"[CLOUD_RUN_JOB] ⚠️ Error checking status: {poll_error}, retrying...")
+                time.sleep(poll_interval)
+        
+        elapsed_time = time.time() - start_time
+        print(f"[CLOUD_RUN_JOB] ✅ SQL query executed successfully in {int(elapsed_time)} seconds")
+        
+        return {
+            'status': 'success',
+            'message': 'SQL query executed successfully',
+            'execution_name': execution_name,
+            'execution_time_seconds': int(elapsed_time)
+        }
+        
+    except Exception as e:
+        error_msg = f"Failed to execute Cloud Run Job: {str(e)}"
+        print(f"[CLOUD_RUN_JOB] ❌ {error_msg}")
+        import traceback
+        print(f"[CLOUD_RUN_JOB] Traceback: {traceback.format_exc()}")
+        raise RuntimeError(error_msg) from e

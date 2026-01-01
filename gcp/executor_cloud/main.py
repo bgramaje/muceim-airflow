@@ -25,12 +25,38 @@ def main():
         con = get_ducklake_connection(duckdb_config=config)
 
         try:
-            df =  con.execute(sql_query).fetchdf()
-            row_count = len(df)
-            print(f"[CLOUD_RUN_JOB] ✅ Query executed successfully")
-            print(f"[CLOUD_RUN_JOB] ✅ Rows affected/returned: {row_count}")
-            if row_count > 0:
-                print(df.head(5).to_string())
+            # DuckDB execute() can handle multiple statements separated by semicolons
+            # Split by semicolon and execute each statement separately to ensure all are executed
+            statements = [s.strip() for s in sql_query.split(';') if s.strip()]
+            
+            print(f"[CLOUD_RUN_JOB] Executing {len(statements)} SQL statement(s)...")
+            
+            result_df = None
+            for i, statement in enumerate(statements, 1):
+                print(f"[CLOUD_RUN_JOB] Executing statement {i}/{len(statements)}...")
+                try:
+                    result = con.execute(statement)
+                    # Try to fetch results (only works for SELECT statements)
+                    try:
+                        result_df = result.fetchdf()
+                    except Exception:
+                        # Not a SELECT statement, no results to fetch
+                        pass
+                except Exception as stmt_error:
+                    error_msg = f"❌ Error in statement {i}/{len(statements)}: {str(stmt_error)}"
+                    print(f"[CLOUD_RUN_JOB] {error_msg}")
+                    print(f"[CLOUD_RUN_JOB] Statement that failed: {statement[:200]}...")
+                    raise RuntimeError(error_msg) from stmt_error
+            
+            print(f"[CLOUD_RUN_JOB] ✅ All SQL statements executed successfully")
+            
+            # If we got results from the last statement, show them
+            if result_df is not None:
+                row_count = len(result_df)
+                print(f"[CLOUD_RUN_JOB] ✅ Rows returned: {row_count}")
+                if row_count > 0:
+                    print(result_df.head(5).to_string())
+            
         except Exception as query_error:
             error_msg = f"❌ Error executing SQL query: {str(query_error)}"
             print(f"[CLOUD_RUN_JOB] {error_msg}")
