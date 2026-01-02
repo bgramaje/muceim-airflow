@@ -133,14 +133,14 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
         if not bucket_exists:
             s3_hook.create_bucket(bucket_name=RUSTFS_RAW_BUCKET)
         else:
-            print(f"[DOWNLOAD] ✅ Bucket '{RUSTFS_RAW_BUCKET}' exists")
+            print(f"[DOWNLOAD] Bucket '{RUSTFS_RAW_BUCKET}' exists")
     except Exception as bucket_error:
-        print(f"[DOWNLOAD] ⚠️ Error checking bucket: {bucket_error}")
+        print(f"[DOWNLOAD] Error checking bucket: {bucket_error}")
         raise bucket_error
     
     file_exists = s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET)
     if file_exists:
-        print(f"[DOWNLOAD] ✅ File already exists in RustFS: {s3_path}")
+        print(f"[DOWNLOAD] File already exists in RustFS: {s3_path}")
         return s3_path
     
     print(f"[DOWNLOAD] Downloading from URL...")
@@ -162,7 +162,7 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
             bucket_name=RUSTFS_RAW_BUCKET,
             replace=True
         )
-        print(f"[DOWNLOAD] ✅ Successfully uploaded to {s3_path}")
+        print(f"[DOWNLOAD] Successfully uploaded to {s3_path}")
     except Exception as e:
         raise RuntimeError(f"Failed to upload file to RustFS: {e}")
     finally:
@@ -186,7 +186,7 @@ def delete_file_from_rustfs(s3_path: str) -> bool:
     print(f"[DELETE] Attempting to delete file from RustFS: {s3_path}")
     
     if not s3_path.startswith("s3://"):
-        print(f"[DELETE] ⚠️ Invalid S3 path format: {s3_path}")
+        print(f"[DELETE] Invalid S3 path format: {s3_path}")
         return False
     
     # Extraer bucket y key de s3://bucket/key
@@ -194,7 +194,7 @@ def delete_file_from_rustfs(s3_path: str) -> bool:
     parts = path_without_prefix.split("/", 1)
     
     if len(parts) != 2:
-        print(f"[DELETE] ⚠️ Could not parse S3 path: {s3_path}")
+        print(f"[DELETE] Could not parse S3 path: {s3_path}")
         return False
     
     bucket_name = parts[0]
@@ -202,7 +202,7 @@ def delete_file_from_rustfs(s3_path: str) -> bool:
     
     # Verificar que el bucket sea mitma-raw (seguridad)
     if bucket_name != RUSTFS_RAW_BUCKET:
-        print(f"[DELETE] ⚠️ Only files from {RUSTFS_RAW_BUCKET} bucket can be deleted. Got: {bucket_name}")
+        print(f"[DELETE] Only files from {RUSTFS_RAW_BUCKET} bucket can be deleted. Got: {bucket_name}")
         return False
     
     print(f"[DELETE] Bucket: {bucket_name}, Key: {s3_key}")
@@ -213,13 +213,13 @@ def delete_file_from_rustfs(s3_path: str) -> bool:
         if s3_hook.check_for_key(s3_key, bucket_name=bucket_name):
             s3_client = s3_hook.get_conn()
             s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
-            print(f"[DELETE] ✅ Successfully deleted file: {s3_path}")
+            print(f"[DELETE] Successfully deleted file: {s3_path}")
             return True
         else:
-            print(f"[DELETE] ⚠️ File does not exist in RustFS: {s3_path} (may have been already deleted)")
+            print(f"[DELETE] File does not exist in RustFS: {s3_path} (may have been already deleted)")
             return True  # Consideramos esto como éxito (idempotente)
     except Exception as e:
-        print(f"[DELETE] ❌ Error deleting file from RustFS: {e}")
+        print(f"[DELETE] Error deleting file from RustFS: {e}")
         return False
 
 
@@ -311,10 +311,10 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
     """
     urls = get_mitma_zoning_urls(zone_type)
 
-    print(f"🚀 Generando dataset maestro para: {zone_type.upper()}")
+    print(f"Generando dataset maestro para: {zone_type.upper()}")
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        print("   ⬇️  Descargando geometrías...")
+        print("   Descargando geometrías...")
         shp_local_path = None
 
         for url in urls['shp_components']:
@@ -328,10 +328,10 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
                     if filename.endswith('.shp'):
                         shp_local_path = local_p
             except Exception as e:
-                print(f"      ⚠️ Error bajando {filename}: {e}")
+                print(f"      Error bajando {filename}: {e}")
 
         if not shp_local_path:
-            print("❌ Error: No se pudo descargar el archivo .shp principal.")
+            print("Error: No se pudo descargar el archivo .shp principal.")
             return None
 
         gdf = gpd.read_file(shp_local_path)
@@ -393,9 +393,9 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
                     else:
                         df_aux = df_aux.merge(df_t, on='ID', how='outer')
 
-                    print(f"      ✓ {cfg['type'].capitalize()} OK")
+                    print(f"      {cfg['type'].capitalize()} OK")
             except Exception as e:
-                print(f"      ⚠️ Fallo procesando {cfg['type']}: {e}")
+                print(f"      Fallo procesando {cfg['type']}: {e}")
 
         # --- C. Merge Final ---
         if not df_aux.empty:
@@ -411,7 +411,7 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
             [c for c in gdf.columns if c not in cols]
         gdf = gdf[final_cols]
 
-        print(f"✅ Dataset generado: {len(gdf)} registros.")
+        print(f"Dataset generado: {len(gdf)} registros.")
         return gdf
 
 
@@ -557,7 +557,7 @@ def merge_from_csv(table_name, url):
             WHEN NOT MATCHED THEN
                 INSERT *;
         """)
-        print(f"  ✅ Merged successfully.")
+        print(f"  Merged successfully.")
     except Exception as e:
         error_str = str(e)
 
@@ -569,13 +569,13 @@ def merge_from_csv(table_name, url):
 
         if is_transaction_error:
             print(
-                f"  ⚠️ Transaction error detected - forcing new connection for next task")
+                f"  Transaction error detected - forcing new connection for next task")
             try:
                 get_ducklake_connection(force_new=True)
             except:
                 pass
 
-        error_msg = f"  ❌ Error processing {url}: {e}"
+        error_msg = f"  Error processing {url}: {e}"
         print(error_msg)
         # Re-raise exception to ensure Airflow task fails
         raise RuntimeError(error_msg) from e
@@ -603,9 +603,9 @@ def create_table_from_json(table_name, url):
     try:
         con.execute(f"ANALYZE {full_table_name};")
         print(
-            f"  ✅ Updated statistics for {full_table_name} (query optimization)")
+            f"  Updated statistics for {full_table_name} (query optimization)")
     except Exception as analyze_error:
-        print(f"  ⚠️ Could not analyze table (non-critical): {analyze_error}")
+        print(f"  Could not analyze table (non-critical): {analyze_error}")
 
     print(f"Table {full_table_name} is ready.")
 
@@ -641,7 +641,7 @@ def merge_from_json(table_name, url, key_columns=None):
             WHEN NOT MATCHED THEN
                 INSERT *;
         """)
-        print(f"  ✅ Merged successfully.")
+        print(f"  Merged successfully.")
     except Exception as e:
         error_str = str(e)
         # Check if it's a transaction error - DuckDB enters restricted mode
@@ -653,14 +653,14 @@ def merge_from_json(table_name, url, key_columns=None):
 
         if is_transaction_error:
             print(
-                f"  ⚠️ Transaction error detected - forcing new connection for next task")
+                f"  Transaction error detected - forcing new connection for next task")
             # Force new connection to avoid affecting other tasks
             try:
                 get_ducklake_connection(force_new=True)
             except:
                 pass  # Connection will be recreated on next use
 
-        error_msg = f"  ❌ Error processing {url}: {e}"
+        error_msg = f"  Error processing {url}: {e}"
         print(error_msg)
         # Re-raise exception to ensure Airflow task fails
         raise RuntimeError(error_msg) from e
@@ -814,10 +814,10 @@ def _filter_json_urls(table_name: str, urls: list[str]):
 
     if len(new_urls) == 0:
         print(
-            f"[TASK] ⚠️  All URLs have already been ingested. No new data to process.")
+            f"[TASK] All URLs have already been ingested. No new data to process.")
     else:
         print(
-            f"[TASK] ✅ URLs to ingest: {new_urls[:3]}{'...' if len(new_urls) > 3 else ''}")
+            f"[TASK] URLs to ingest: {new_urls[:3]}{'...' if len(new_urls) > 3 else ''}")
 
     return new_urls
 
@@ -881,9 +881,9 @@ def _filter_csv_urls(table_name: str, urls: list[str]):
 
     if len(new_urls) == 0:
         print(
-            f"[TASK] ⚠️  All URLs have already been ingested. No new data to process.")
+            f"[TASK] All URLs have already been ingested. No new data to process.")
     else:
         print(
-            f"[TASK] ✅ URLs to ingest: {new_urls[:3]}{'...' if len(new_urls) > 3 else ''}")
+            f"[TASK] URLs to ingest: {new_urls[:3]}{'...' if len(new_urls) > 3 else ''}")
 
     return new_urls

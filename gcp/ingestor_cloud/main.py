@@ -63,7 +63,7 @@ def main():
         original_url = os.environ.get("ORIGINAL_URL")  # URL original para logging (opcional)
 
         if not table_name or not s3_path:
-            print("❌ ERROR: Missing required environment variables: TABLE_NAME and URL (S3 path)")
+            print("ERROR: Missing required environment variables: TABLE_NAME and URL (S3 path)")
             sys.exit(1)
 
         # Validar que la URL es una ruta S3
@@ -139,15 +139,15 @@ def main():
                 INSERT *;
         """)
 
-        print(f"[CLOUD_RUN_JOB] ✅ Successfully read CSV from RustFS S3 into staging")
-        print(f"[CLOUD_RUN_JOB] ✅ Merged successfully into {table_name}")
+        print(f"[CLOUD_RUN_JOB] Successfully read CSV from RustFS S3 into staging")
+        print(f"[CLOUD_RUN_JOB] Merged successfully into {table_name}")
 
         con.close()
-        print("[CLOUD_RUN_JOB] ✅ Job completed successfully")
+        print("[CLOUD_RUN_JOB] Job completed successfully")
         sys.exit(0)
 
     except Exception as e:
-        error_msg = f"❌ Error processing job: {str(e)}"
+        error_msg = f"Error processing job: {str(e)}"
         print(f"[CLOUD_RUN_JOB] {error_msg}")
         import traceback
         traceback.print_exc()

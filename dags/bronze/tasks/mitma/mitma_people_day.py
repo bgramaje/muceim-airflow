@@ -67,8 +67,8 @@ def BRONZE_mitma_people_day_insert(url: str, zone_type: str = 'distritos'):
     con = get_ducklake_connection()
     try:
         con.execute(f"ANALYZE {full_table_name};")
-        print(f"  ✅ Updated statistics for {full_table_name} (query optimization)")
+        print(f"  Updated statistics for {full_table_name} (query optimization)")
     except Exception as analyze_error:
-        print(f"  ⚠️ Could not analyze table (non-critical): {analyze_error}")
+        print(f"  Could not analyze table (non-critical): {analyze_error}")
 
     return {'status': 'success', 'url': url}

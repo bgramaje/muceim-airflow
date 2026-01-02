@@ -81,9 +81,9 @@ def BRONZE_ine_poblacion_municipio_insert(url: str):
     con = get_ducklake_connection()
     try:
         con.execute(f"ANALYZE {full_table_name};")
-        print(f"  ✅ Updated statistics for {full_table_name} (query optimization)")
+        print(f"  Updated statistics for {full_table_name} (query optimization)")
     except Exception as analyze_error:
-        print(f"  ⚠️ Could not analyze table (non-critical): {analyze_error}")
+        print(f"  Could not analyze table (non-critical): {analyze_error}")
     
     return {
         'status': 'success',

@@ -11,14 +11,14 @@ def load_extension(con: duckdb.DuckDBPyConnection, extension: str):
     try:
         con.execute(f"INSTALL {extension};")
         con.execute(f"LOAD {extension};")
-        print(f"✅ Extension {extension} loaded")
+        print(f"Extension {extension} loaded")
     except Exception as e:
-        print(f"⚠️ Warning loading {extension}: {e}")
+        print(f"Warning loading {extension}: {e}")
         try:
             con.execute(f"LOAD {extension};")
-            print(f"✅ Extension {extension} loaded (already installed)")
+            print(f"Extension {extension} loaded (already installed)")
         except:
-            print(f"❌ Failed to load {extension}")
+            print(f"Failed to load {extension}")
             raise
 
 def _get_default_duckdb_config():
@@ -145,9 +145,9 @@ class DuckLakeConnectionManager:
             if not all([RUSTFS_USER, RUSTFS_PASSWORD]):
                 raise ValueError("Missing required RustFS environment variables")
         
-        print(f"   ✅ PostgreSQL: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}")
-        print(f"   ✅ RustFS: {S3_ENDPOINT}")
-        print(f"   ✅ Bucket: {RUSTFS_BUCKET}")
+        print(f"   PostgreSQL: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}")
+        print(f"   RustFS: {S3_ENDPOINT}")
+        print(f"   Bucket: {RUSTFS_BUCKET}")
     
         # Get DuckDB configuration (use provided config or defaults)
         if duckdb_config is None:
@@ -157,7 +157,7 @@ class DuckLakeConnectionManager:
             default_config = _get_default_duckdb_config()
             duckdb_config = {**default_config, **duckdb_config}
         
-        print(f"   ✅ DuckDB Config: memory_limit={duckdb_config['memory_limit']}, "
+        print(f"   DuckDB Config: memory_limit={duckdb_config['memory_limit']}, "
               f"threads={duckdb_config['threads']}, "
               f"worker_threads={duckdb_config['worker_threads']}")
     
@@ -188,9 +188,22 @@ class DuckLakeConnectionManager:
 
         databases = con.execute("SELECT database_name FROM duckdb_databases();").fetchdf()
         if 'ducklake' not in databases['database_name'].values:
+            # Configuración mejorada de PostgreSQL para evitar cierres inesperados de SSL
+            # sslmode=prefer: intenta usar SSL pero continúa sin SSL si hay problemas (más robusto que require)
+            # keepalives_idle: tiempo antes de enviar el primer keepalive (20s)
+            # keepalives_interval: intervalo entre keepalives (5s)
+            # keepalives_count: número de keepalives antes de considerar la conexión muerta (3)
+            # tcp_user_timeout: timeout total de TCP (20s)
+            # connect_timeout: timeout para establecer conexión (30s)
             postgres_connection_string = f"""
                 dbname={POSTGRES_DB} host={POSTGRES_HOST} user={POSTGRES_USER} password={POSTGRES_PASSWORD} port={POSTGRES_PORT} 
-                sslmode=require connect_timeout=30 keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=5 tcp_user_timeout=30000
+                sslmode=prefer 
+                connect_timeout=30 
+                keepalives=1 
+                keepalives_idle=20 
+                keepalives_interval=5 
+                keepalives_count=3 
+                tcp_user_timeout=20000
             """
             attach_query = f"""
                 ATTACH 'ducklake:postgres:{postgres_connection_string}' AS ducklake (DATA_PATH 's3://{RUSTFS_BUCKET}/');

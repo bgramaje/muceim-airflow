@@ -5,7 +5,7 @@ from airflow.sdk import task
 # Add parent directory to path to import utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-from utils.gcp import execute_cloud_run_job_sql
+from utils.gcp import execute_sql_or_cloud_run
 
 
 @task
@@ -30,9 +30,9 @@ def SILVER_mitma_distances(**context):
         WHERE o.id < d.id;
     """
 
-    result = execute_cloud_run_job_sql(sql_query=sql_query, **context)
+    result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
     
-    print(f"[TASK] ✅ silver_mitma_distances table built successfully")
+    print(f"[TASK] silver_mitma_distances table built successfully")
     print(f"[TASK] Execution time: {result.get('execution_time_seconds', 0)} seconds")
 
     return {

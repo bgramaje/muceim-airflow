@@ -7,7 +7,7 @@ Processes dates that are in silver_od but not yet processed in silver_od_quality
 from airflow.sdk import task
 from typing import List, Dict, Any
 
-from utils.gcp import execute_cloud_run_job_sql
+from utils.gcp import execute_sql_or_cloud_run
 from utils.utils import get_ducklake_connection
 
 
@@ -45,14 +45,14 @@ def SILVER_od_quality_get_date_batches(batch_size: int = 30, **context) -> List[
         df = con.execute(query).fetchdf()
         
         if df.empty:
-            print("[TASK] ⚠️ No unprocessed quality dates found")
+            print("[TASK] No unprocessed quality dates found")
             return []
         
         fechas = [str(fecha) for fecha in df['fecha'].unique()]
         fechas = sorted(fechas)
         
         if not fechas:
-            print("[TASK] ⚠️ No valid unprocessed quality dates found")
+            print("[TASK] No valid unprocessed quality dates found")
             return []
         
         print(f"[TASK] Total unprocessed quality dates: {len(fechas)}")
@@ -77,7 +77,7 @@ def SILVER_od_quality_get_date_batches(batch_size: int = 30, **context) -> List[
         return batches
         
     except Exception as e:
-        print(f"[TASK] ❌ Error getting date batches: {e}")
+        print(f"[TASK] Error getting date batches: {e}")
         import traceback
         traceback.print_exc()
         return []
@@ -122,7 +122,7 @@ def SILVER_od_quality_create_table(**context) -> Dict:
     
     con.execute(sql_query)
     
-    print("[TASK] ✅ Tables created/verified successfully")
+    print("[TASK] Tables created/verified successfully")
     
     return {
         "status": "success",
@@ -279,9 +279,9 @@ def SILVER_od_quality_process_batch(date_batch: Dict[str, Any], **context) -> Di
             VALUES (source.fecha, source.origen_zone_id, source.destino_zone_id, source.residencia, source.viajes_per_capita, source.km_per_capita, source.flag_negative_viajes, source.flag_negative_viajes_km, source.z_viajes_per_capita, source.flag_outlier_viajes_per_capita);
     """
     
-    result = execute_cloud_run_job_sql(sql_query=sql_query, **context)
+    result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
     
-    print(f"[TASK] ✅ Quality batch {batch_index} processed successfully: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
+    print(f"[TASK] Quality batch {batch_index} processed successfully: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
     
     return {
         "status": "success",

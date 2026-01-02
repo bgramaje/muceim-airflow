@@ -133,7 +133,7 @@ gcloud projects add-iam-policy-binding muceim-bigdata \
 
 ## Uso desde Airflow
 
-El job se ejecuta automáticamente desde Airflow usando la función `execute_cloud_run_job_merge_csv()` en `dags/utils/gcp.py`.
+El job se ejecuta automáticamente desde Airflow usando la función `exec_gcp_ducklake_ingestor()` en `dags/utils/gcp.py`.
 
 Las variables de entorno `TABLE_NAME`, `URL`, y `ZONE_TYPE` se pasan automáticamente desde Airflow.
 

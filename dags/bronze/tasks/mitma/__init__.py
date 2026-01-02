@@ -2,8 +2,7 @@ from .mitma_od import (
     BRONZE_mitma_od_urls,
     BRONZE_mitma_od_create_table,
     BRONZE_mitma_od_filter_urls,
-    BRONZE_mitma_od_download_to_rustfs,
-    BRONZE_mitma_od_insert,
+    BRONZE_mitma_od_process,
 )
 from .mitma_people_day import (
     BRONZE_mitma_people_day_urls,
@@ -26,8 +25,7 @@ __all__ = [
     "BRONZE_mitma_od_urls",
     "BRONZE_mitma_od_create_table",
     "BRONZE_mitma_od_filter_urls",
-    "BRONZE_mitma_od_download_to_rustfs",
-    "BRONZE_mitma_od_insert",
+    "BRONZE_mitma_od_process",
     "BRONZE_mitma_people_day_urls",
     "BRONZE_mitma_people_day_create_table",
     "BRONZE_mitma_people_day_filter_urls",

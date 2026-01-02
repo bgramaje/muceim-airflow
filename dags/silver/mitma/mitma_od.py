@@ -38,7 +38,7 @@ from airflow.sdk import task
 from typing import Any
 from typing import List, Dict, Any
 
-from utils.gcp import execute_cloud_run_job_sql
+from utils.gcp import execute_sql_or_cloud_run
 from utils.utils import get_ducklake_connection
 
 
@@ -59,7 +59,6 @@ def SILVER_mitma_od_get_date_batches(batch_size: int = 30, **context) -> List[Di
     
     con = get_ducklake_connection()
     
-    # Obtener fechas únicas de la tabla bronze excluyendo las ya procesadas
     query = """
         SELECT DISTINCT 
             b.fecha
@@ -73,53 +72,42 @@ def SILVER_mitma_od_get_date_batches(batch_size: int = 30, **context) -> List[Di
         ORDER BY b.fecha
     """
     
-    try:
-        df = con.execute(query).fetchdf()
-        
-        if df.empty:
-            print("[TASK] ⚠️ No unprocessed dates found in bronze table")
-            return []
-        
-        # Obtener fechas como están, sin convertir a datetime
-        fechas = [str(fecha) for fecha in df['fecha'].unique()]
-        fechas = sorted(fechas)
-        
-        if not fechas:
-            print("[TASK] ⚠️ No valid unprocessed dates found")
-            return []
-        
-        print(f"[TASK] Total unprocessed dates: {len(fechas)}")
-        
-        batches = []
-        batch_index = 0
-        
-        for i in range(0, len(fechas), batch_size):
-            batch_fechas = fechas[i:i + batch_size]
-            
-            batches.append({
-                'batch_index': batch_index,
-                'fechas': batch_fechas
-            })
-            
-            batch_index += 1
-        
-        print(f"[TASK] Created {len(batches)} batches")
-        for i, batch in enumerate(batches, 1):
-            print(f"[TASK]   Batch {i}: {len(batch['fechas'])} dates (from {batch['fechas'][0]} to {batch['fechas'][-1]})")
-        
-        # Debug: print first batch structure
-        if batches:
-            print(f"[TASK] DEBUG: First batch structure: {batches[0]}")
-            print(f"[TASK] DEBUG: First batch type: {type(batches[0])}")
-            print(f"[TASK] DEBUG: First batch keys: {batches[0].keys() if isinstance(batches[0], dict) else 'not a dict'}")
-        
-        return batches
-        
-    except Exception as e:
-        print(f"[TASK] ❌ Error getting date batches: {e}")
-        import traceback
-        traceback.print_exc()
+    df = con.execute(query).fetchdf()
+    
+    if df.empty:
+        print("[TASK] No unprocessed dates found in bronze table")
         return []
+    
+    fechas = [str(fecha) for fecha in df['fecha'].unique()]
+    fechas = sorted(fechas)
+    
+    if not fechas:
+        print("[TASK] No valid unprocessed dates found")
+        return []
+    
+    print(f"[TASK] Total unprocessed dates: {len(fechas)}")
+    
+    batches = []
+    batch_index = 0
+    
+    for i in range(0, len(fechas), batch_size):
+        batch_fechas = fechas[i:i + batch_size]
+        batches.append({
+            'batch_index': batch_index,
+            'fechas': batch_fechas
+        })
+        batch_index += 1
+    
+    print(f"[TASK] Created {len(batches)} batches")
+    for i, batch in enumerate(batches, 1):
+        print(f"[TASK]   Batch {i}: {len(batch['fechas'])} dates (from {batch['fechas'][0]} to {batch['fechas'][-1]})")
+    
+    if batches:
+        print(f"[TASK] DEBUG: First batch structure: {batches[0]}")
+        print(f"[TASK] DEBUG: First batch type: {type(batches[0])}")
+        print(f"[TASK] DEBUG: First batch keys: {batches[0].keys() if isinstance(batches[0], dict) else 'not a dict'}")
+    
+    return batches
 
 
 @task.branch
@@ -138,11 +126,11 @@ def SILVER_mitma_od_check_batches(date_batches: list[dict], **context) -> Any:
         'mitma_od_batches.batches_skipped' si no hay batches
     """
     if not date_batches or len(date_batches) == 0:
-        print("[TASK] ⚠️ No batches to process, will execute batches_skipped")
+        print("[TASK] No batches to process, will execute batches_skipped")
         # Retornar el task_id completo con el prefijo del TaskGroup
         return "mitma_od_batches.batches_skipped"
     else:
-        print(f"[TASK] ✓ Found {len(date_batches)} batches to process")
+        print(f"[TASK] Found {len(date_batches)} batches to process")
         # Retornar el task_id de process_batch para ejecutar el dynamic task mapping
         return "mitma_od_batches.process_batch"
 
@@ -184,7 +172,7 @@ def SILVER_mitma_od_create_table(**context) -> Dict:
     
     con.execute(sql_query)
     
-    print("[TASK] ✅ Tables created/verified successfully")
+    print("[TASK] Tables created/verified successfully")
     
     return {
         "status": "success",
@@ -224,13 +212,7 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
     
     if not fechas:
         raise ValueError(f"No fechas found in date_batch: {date_batch}")
-    
-    # Crear lista de fechas para la query IN (...)
-    fechas_str = "', '".join(str(f) for f in fechas)
-    
-    # Crear valores para INSERT directo de fechas (optimizado)
-    fechas_values = "), (".join(f"'{str(f)}'" for f in fechas)
-    
+        
     print(f"[TASK] Processing batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
     
     # Query optimizada para el batch específico usando MERGE (idempotente)
@@ -253,7 +235,7 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
                 FROM bronze_mitma_od_municipios
                 WHERE 
                     -- Filtrado por lista de fechas del batch
-                    fecha IN ('{fechas_str}')
+                    fecha IN ('{"', '".join(str(f) for f in fechas)}')
                     -- Early filtering: filter invalid data before expensive transformations
                     AND fecha IS NOT NULL
                     AND periodo IS NOT NULL
@@ -295,7 +277,7 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
         MERGE INTO silver_od_processed_dates AS target
         USING (
             SELECT fecha::VARCHAR AS fecha
-            FROM (VALUES ({fechas_values}))
+            FROM (VALUES ({"), (".join(f"'{str(f)}'" for f in fechas)}))
             AS t(fecha)
         ) AS source
         ON target.fecha = source.fecha
@@ -303,9 +285,9 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
             INSERT (fecha) VALUES (source.fecha);
     """
     
-    result = execute_cloud_run_job_sql(sql_query=sql_query, **context)
+    result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
     
-    print(f"[TASK] ✅ Batch {batch_index} processed successfully: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
+    print(f"[TASK] Batch {batch_index} processed successfully: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
     
     return {
         "status": "success",

@@ -29,7 +29,7 @@ def PRE_s3_bucket():
         
         # Check if bucket exists
         if s3_hook.check_for_bucket(bucket_name):
-            print(f"[TASK] ✅ Bucket '{bucket_name}' already exists")
+            print(f"[TASK] Bucket '{bucket_name}' already exists")
             return {
                 'status': 'exists',
                 'bucket': bucket_name,
@@ -37,9 +37,9 @@ def PRE_s3_bucket():
             }
         else:
             # Create bucket
-            print(f"[TASK] 📦 Creating bucket '{bucket_name}'...")
+            print(f"[TASK] Creating bucket '{bucket_name}'...")
             s3_hook.create_bucket(bucket_name=bucket_name)
-            print(f"[TASK] ✅ Bucket '{bucket_name}' created successfully")
+            print(f"[TASK] Bucket '{bucket_name}' created successfully")
             return {
                 'status': 'created',
                 'bucket': bucket_name,
@@ -47,5 +47,5 @@ def PRE_s3_bucket():
             }
             
     except Exception as e:
-        print(f"[TASK] ❌ Error with bucket: {str(e)}")
+        print(f"[TASK] Error with bucket: {str(e)}")
         raise
