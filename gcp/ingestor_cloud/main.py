@@ -49,8 +49,6 @@ def _get_csv_source_query(s3_path, original_url=None):
             filename = true,
             header = true,
             all_varchar = true,
-            -- Si siempre son gzip, mantenlo; si no, quita esta línea
-            compression = 'gzip'
         )
     """
 
