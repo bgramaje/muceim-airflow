@@ -3,6 +3,10 @@ import sys
 import os
 from airflow.sdk import task # type: ignore
 
+# Add parent directory to path to import utils
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
+from utils.gcp import execute_cloud_run_job_sql
 from utils.utils import get_ducklake_connection
 
 @task
@@ -10,17 +14,16 @@ def SILVER_ine_all(**context):
     """
     Airflow task to create silver_ine_all table by joining zones with INE data.
     Adds year column extracted from params.start (YYYY-MM-DD format).
+    Executes using Cloud Run Job (ducklake-executor).
     """
-    print("[TASK] Building silver_ine_all table")
-
-    con = get_ducklake_connection()
+    print("[TASK] Building silver_ine_all table using Cloud Run")
     
     # Extract year from DAG params
     year = context['params'].get('start', '')[:4] if context['params'].get('start') else ''
     print(f"[TASK] Using year: {year}")
 
     # User provided SQL from notebook
-    query = f"""
+    sql_query = f"""
     CREATE OR REPLACE TABLE silver_ine_all AS (
         SELECT 
             z.id,
@@ -42,20 +45,17 @@ def SILVER_ine_all(**context):
     )
     """
     
-    con.execute(query)
-
-    # Verification
-    count = con.execute("SELECT COUNT(*) as count FROM silver_ine_all").fetchdf()
-    record_count = int(count['count'].iloc[0])
+    result = execute_cloud_run_job_sql(sql_query=sql_query, **context)
     
-    print(f"[TASK] Created silver_ine_all with {record_count:,} records")
-    print(con.execute("SELECT * FROM silver_ine_all LIMIT 10").fetchdf())
+    print(f"[TASK] ✅ silver_ine_all table built successfully")
+    print(f"[TASK] Execution time: {result.get('execution_time_seconds', 0)} seconds")
 
     return {
         "status": "success",
-        "records": record_count,
         "table": "silver_ine_all",
-        "year": year
+        "year": year,
+        "execution_name": result.get("execution_name"),
+        "execution_time_seconds": result.get("execution_time_seconds")
     }
 
 @task
