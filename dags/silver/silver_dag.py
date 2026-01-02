@@ -98,10 +98,10 @@ with DAG(
         # 4. done se ejecuta cuando termina cualquiera de los dos caminos
         od_create_table >> od_date_batches
         od_date_batches >> od_check_batches  # Branch para decidir el flujo
-        # El branch decide: si hay batches -> retorna None (todas las downstream se ejecutan)
-        # Si no hay batches -> retorna 'batches_skipped'
+        # El branch decide: si hay batches -> retorna 'mitma_od_batches.process_batch'
+        # Si no hay batches -> retorna 'mitma_od_batches.batches_skipped'
         od_check_batches >> od_batches_skipped  # Se ejecuta solo si no hay batches (branch retorna 'batches_skipped')
-        od_check_batches >> od_process_batches  # Se ejecuta solo si hay batches (branch retorna None)
+        od_check_batches >> od_process_batches  # Se ejecuta solo si hay batches (branch retorna 'process_batch')
         # process_batches también necesita el resultado directo de od_date_batches para el expand (XCom)
         od_date_batches >> od_process_batches  # Dynamic task mapping (necesita el XCom de od_date_batches)
         # done se ejecuta cuando termina cualquiera de los dos caminos

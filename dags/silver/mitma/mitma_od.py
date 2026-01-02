@@ -127,15 +127,15 @@ def SILVER_mitma_od_check_batches(date_batches: list[dict], **context) -> Any:
     """
     Branch task que determina si hay batches para procesar o no.
     
-    Si hay batches (lista no vacía), retorna una lista vacía para que se ejecuten todas las tareas.
+    Si hay batches (lista no vacía), retorna el task_id de process_batch para ejecutarlo.
     Si no hay batches (lista vacía), retorna el task_id para ejecutar batches_skipped.
     
     Args:
         date_batches: Lista de batches retornada por SILVER_mitma_od_get_date_batches
         
     Returns:
-        Lista vacía [] si hay batches (para que todas las tareas downstream se ejecuten),
-        'batches_skipped' si no hay batches
+        'mitma_od_batches.process_batch' si hay batches (para ejecutar el dynamic task mapping),
+        'mitma_od_batches.batches_skipped' si no hay batches
     """
     if not date_batches or len(date_batches) == 0:
         print("[TASK] ⚠️ No batches to process, will execute batches_skipped")
@@ -143,9 +143,8 @@ def SILVER_mitma_od_check_batches(date_batches: list[dict], **context) -> Any:
         return "mitma_od_batches.batches_skipped"
     else:
         print(f"[TASK] ✓ Found {len(date_batches)} batches to process")
-        # Retornar None para que todas las tareas downstream conectadas directamente al branch se ejecuten
-        # Pero od_process_batches está conectado directamente a od_date_batches, así que se ejecutará de todos modos
-        return None
+        # Retornar el task_id de process_batch para ejecutar el dynamic task mapping
+        return "mitma_od_batches.process_batch"
 
 
 @task
