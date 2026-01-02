@@ -63,15 +63,15 @@ flowchart LR
 | 8019 | Barcelona | MULTIPOLYGON((...)) | POINT(2.1734 41.3851) |
 | 46250 | Valencia | MULTIPOLYGON((...)) | POINT(-0.3763 39.4699) |
 
-## `silver_od`
+## `silver_mitma_od`
 
 ```mermaid
 flowchart LR
-  B[bronze_mitma_od_municipios] --> S[silver_od]
+  B[bronze_mitma_od_municipios] --> S[silver_mitma_od]
   H[bronze_spanish_holidays] -. referenciado en comentario .-> S
 ```
 
-- **Input**: `bronze_mitma_od_municipios` (y aparece `bronze_spanish_holidays` como dependencia “comentada”, pero **en la SQL actual no se usa**)
+- **Input**: `bronze_mitma_od_municipios` (y aparece `bronze_spanish_holidays` como dependencia "comentada", pero **en la SQL actual no se usa**)
 - **Transformaciones**:
   - **Fecha/hora**: `strptime(fecha::VARCHAR || LPAD(periodo::VARCHAR, 2, '0'), '%Y%m%d%H') AS fecha`.
   - **Renombre de columnas**: `origen`/`destino` → `origen_zone_id`/`destino_zone_id`.
@@ -315,9 +315,64 @@ flowchart LR
 
 ## Limpieza de intermedias (post-proceso)
 
-No es “bronze → silver”, pero sí parte del pipeline: `CLEANUP_intermediate_ine_tables` hace `DROP TABLE IF EXISTS` de:
+No es "bronze → silver", pero sí parte del pipeline: `CLEANUP_intermediate_ine_tables` hace `DROP TABLE IF EXISTS` de:
 
 - `silver_ine_empresas_municipio`
 - `silver_ine_poblacion_municipio`
 - `silver_ine_renta_municipio`
+
+---
+
+## Bug conocido: DuckLake + MERGE INTO + Particionado con funciones
+
+### Problema
+
+Al usar DuckLake con tablas particionadas mediante funciones `year()`, `month()`, `day()` combinado con `MERGE INTO`, se generan valores de partición incorrectos (números enormes como `year=1030792151665` en lugar de `year=2023`).
+
+```sql
+-- ❌ NO FUNCIONA con MERGE INTO
+ALTER TABLE silver_od SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));
+
+-- Luego al hacer MERGE INTO, las particiones salen corruptas:
+-- year=-1977503543602676920/
+-- year=1030792151665/
+```
+
+### Causa
+
+El bug parece estar en cómo DuckLake evalúa las funciones `year()`, `month()`, `day()` durante la operación `MERGE INTO`. En lugar de aplicar las funciones sobre el valor formateado del TIMESTAMP, las aplica sobre la representación interna (microsegundos desde epoch o similar).
+
+### Solución implementada
+
+Se usa `INSERT INTO` en lugar de `MERGE INTO` para las tablas `silver_mitma_od` y `silver_mitma_od_quality`. El particionado con funciones funciona correctamente con `INSERT INTO`.
+
+```sql
+-- ✅ FUNCIONA con INSERT INTO
+ALTER TABLE silver_mitma_od SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));
+ALTER TABLE silver_mitma_od_quality SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));
+
+-- INSERT INTO genera particiones correctas:
+-- year=2023/month=3/day=6/
+-- year=2023/month=4/day=25/
+```
+
+### Alternativas probadas
+
+| Configuración | Funciona? |
+|---------------|-----------|
+| `MERGE INTO` + `PARTITIONED BY (year(fecha), ...)` | ❌ Bug |
+| `INSERT INTO` + `PARTITIONED BY (year(fecha), ...)` | ✅ Sí |
+| `MERGE INTO` + `PARTITIONED BY (fecha)` (identity) | ✅ Sí (pero muchas particiones) |
+| `MERGE INTO` + columnas explícitas `p_year`, `p_month`, `p_day` | ✅ Sí |
+
+### Implicaciones de usar INSERT en lugar de MERGE
+
+- **No idempotente**: Si se re-ejecuta el mismo batch, los datos se duplican.
+- **Mitigación para `silver_mitma_od`**: Se usa la tabla `silver_mitma_od_processed_dates` para trackear fechas ya procesadas y evitar re-procesamiento.
+- **Mitigación para `silver_mitma_od_quality`**: Solo se procesan fechas que están en `silver_mitma_od_processed_dates` pero no en `silver_mitma_od_quality`.
+
+### Referencias
+
+- Este bug ha sido reportado en la comunidad de DuckDB/DuckLake.
+- La documentación oficial recomienda usar columnas de partición explícitas como workaround.
 

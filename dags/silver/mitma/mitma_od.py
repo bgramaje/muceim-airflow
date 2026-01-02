@@ -66,7 +66,7 @@ def SILVER_mitma_od_get_date_batches(batch_size: int = 30, **context) -> List[Di
         WHERE b.fecha IS NOT NULL
             AND CAST(b.fecha AS VARCHAR) NOT IN (
                 SELECT fecha 
-                FROM silver_od_processed_dates
+                FROM silver_mitma_od_processed_dates
                 WHERE fecha IS NOT NULL
             )
         ORDER BY b.fecha
@@ -138,24 +138,33 @@ def SILVER_mitma_od_check_batches(date_batches: list[dict], **context) -> Any:
 @task
 def SILVER_mitma_od_create_table(**context) -> Dict:
     """
-    Crea las tablas silver_od y silver_od_processed_dates si no existen.
-    Esta tarea debe ejecutarse antes de procesar los batches.
-    Hace el proceso idempotente al no reemplazar tablas existentes.
+    Crea las tablas silver_mitma_od y silver_mitma_od_processed_dates si no existen.
+    silver_mitma_od está particionada por year/month/day de fecha para optimizar queries.
+    El particionado solo se aplica a tablas nuevas (vacías) para evitar corrupción.
     
     Returns:
     - Dict con status de la creación de las tablas
     """
-    print("[TASK] Creating silver_od and silver_od_processed_dates tables if they don't exist")
+    print("[TASK] Creating silver_mitma_od and silver_mitma_od_processed_dates tables if they don't exist")
     
     con = get_ducklake_connection()
     
-    sql_query = """
-        -- DuckDB optimizations for large datasets
+    table_exists = False
+    try:
+        result = con.execute("""
+            SELECT COUNT(*) as cnt FROM information_schema.tables 
+            WHERE table_schema = 'main' AND table_name = 'silver_mitma_od'
+        """).fetchone()
+        table_exists = result[0] > 0
+    except:
+        pass
+    
+    # Crear tabla si no existe
+    con.execute("""
         SET preserve_insertion_order=false;
         SET enable_object_cache=true;
         
-        -- Crear tabla silver_od si no existe (idempotente)
-        CREATE TABLE IF NOT EXISTS silver_od (
+        CREATE TABLE IF NOT EXISTS silver_mitma_od (
             fecha TIMESTAMP,
             origen_zone_id VARCHAR,
             destino_zone_id VARCHAR,
@@ -164,26 +173,28 @@ def SILVER_mitma_od_create_table(**context) -> Dict:
             residencia VARCHAR
         );
         
-        -- Crear tabla de tracking de fechas procesadas (idempotente)
-        CREATE TABLE IF NOT EXISTS silver_od_processed_dates (
+        CREATE TABLE IF NOT EXISTS silver_mitma_od_processed_dates (
             fecha VARCHAR
         );
-    """
+    """)
     
-    con.execute(sql_query)
+    # PRUEBA: Particionado con funciones year/month/day
+    # Probando si el problema es MERGE o el particionado en sí
+    if not table_exists:
+        con.execute("ALTER TABLE silver_mitma_od SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));")
     
     print("[TASK] Tables created/verified successfully")
     
     return {
         "status": "success",
-        "table": "silver_od"
+        "table": "silver_mitma_od",
     }
 
 
 @task
 def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict:
     """
-    Procesa un batch de fechas de la tabla bronze usando MERGE para hacer upsert en silver_od.
+    Procesa un batch de fechas de la tabla bronze usando MERGE para hacer upsert en silver_mitma_od.
     Suma los valores de viajes y viajes_km cuando coinciden fecha, origen, destino y residencia,
     permitiendo agregar registros con diferentes segmentos demográficos (edad, renta, etc.).
     Cada batch se procesa en paralelo usando dynamic task mapping.
@@ -215,66 +226,50 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
         
     print(f"[TASK] Processing batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
     
-    # Query optimizada para el batch específico usando MERGE (idempotente)
+    # PRUEBA: INSERT INTO en lugar de MERGE para probar si el bug es del MERGE
     sql_query = f"""
         -- DuckDB optimizations for large datasets
         SET preserve_insertion_order=false;
         SET enable_object_cache=true;
         
-        -- MERGE datos del batch en silver_od (suma valores cuando coinciden las claves)
-        MERGE INTO silver_od AS target
-        USING (
-            WITH base AS (
-                SELECT
-                    strptime(fecha::VARCHAR || LPAD(periodo::VARCHAR, 2, '0'), '%Y%m%d%H') as fecha,
-                    origen AS origen_zone_id,
-                    destino AS destino_zone_id,
-                    CAST(viajes AS DOUBLE) AS viajes,
-                    CAST(viajes_km AS DOUBLE) AS viajes_km,
-                    residencia
-                FROM bronze_mitma_od_municipios
-                WHERE 
-                    -- Filtrado por lista de fechas del batch
-                    fecha IN ('{"', '".join(str(f) for f in fechas)}')
-                    -- Early filtering: filter invalid data before expensive transformations
-                    AND fecha IS NOT NULL
-                    AND periodo IS NOT NULL
-                    AND origen IS NOT NULL
-                    AND origen != 'externo'
-                    AND destino IS NOT NULL
-                    AND destino != 'externo'
-                    AND viajes IS NOT NULL
-                    AND viajes_km IS NOT NULL
-                    AND residencia IS NOT NULL
-            )
-            -- Agrupar por clave única y sumar viajes y viajes_km
-            -- Esto permite agregar registros con misma fecha/origen/destino/residencia
-            -- pero diferentes segmentos demográficos (edad, renta, etc.)
+        -- INSERT INTO (sin MERGE) para probar particionado con funciones
+        INSERT INTO silver_mitma_od (fecha, origen_zone_id, destino_zone_id, viajes, viajes_km, residencia)
+        WITH base AS (
             SELECT
-                fecha,
-                origen_zone_id,
-                destino_zone_id,
-                residencia,
-                SUM(viajes) AS viajes,
-                SUM(viajes_km) AS viajes_km
-            FROM base
-            GROUP BY fecha, origen_zone_id, destino_zone_id, residencia
-        ) AS source
-        ON target.fecha = source.fecha
-            AND target.origen_zone_id = source.origen_zone_id
-            AND target.destino_zone_id = source.destino_zone_id
-            AND target.residencia = source.residencia
-        WHEN MATCHED THEN
-            -- Sumar los valores nuevos a los existentes (no reemplazar)
-            UPDATE SET
-                viajes = target.viajes + source.viajes,
-                viajes_km = target.viajes_km + source.viajes_km
-        WHEN NOT MATCHED THEN
-            INSERT (fecha, origen_zone_id, destino_zone_id, viajes, viajes_km, residencia)
-            VALUES (source.fecha, source.origen_zone_id, source.destino_zone_id, source.viajes, source.viajes_km, source.residencia);
+                strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::TIMESTAMP + (periodo::INTEGER * INTERVAL 1 HOUR) AS fecha,
+                origen AS origen_zone_id,
+                destino AS destino_zone_id,
+                CAST(viajes AS DOUBLE) AS viajes,
+                CAST(viajes_km AS DOUBLE) AS viajes_km,
+                residencia
+            FROM bronze_mitma_od_municipios
+            WHERE 
+                -- Filtrado por lista de fechas del batch
+                fecha IN ('{"', '".join(str(f) for f in fechas)}')
+                -- Early filtering: filter invalid data before expensive transformations
+                AND fecha IS NOT NULL
+                AND periodo IS NOT NULL
+                AND origen IS NOT NULL
+                AND origen != 'externo'
+                AND destino IS NOT NULL
+                AND destino != 'externo'
+                AND viajes IS NOT NULL
+                AND viajes_km IS NOT NULL
+                AND residencia IS NOT NULL
+        )
+        -- Agrupar por clave única y sumar viajes y viajes_km
+        SELECT
+            fecha,
+            origen_zone_id,
+            destino_zone_id,
+            SUM(viajes) AS viajes,
+            SUM(viajes_km) AS viajes_km,
+            residencia
+        FROM base
+        GROUP BY fecha, origen_zone_id, destino_zone_id, residencia;
         
         -- Registrar fechas procesadas directamente desde el batch (optimizado, sin consultar bronze)
-        MERGE INTO silver_od_processed_dates AS target
+        MERGE INTO silver_mitma_od_processed_dates AS target
         USING (
             SELECT fecha::VARCHAR AS fecha
             FROM (VALUES ({"), (".join(f"'{str(f)}'" for f in fechas)}))

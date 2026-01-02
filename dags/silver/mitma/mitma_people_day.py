@@ -16,20 +16,60 @@ from utils.utils import get_ducklake_connection
 
 
 @task
-def SILVER_mitma_people_day():
+def SILVER_mitma_people_day_create_table(**context):
     """
-    Airflow task to transform and standardize MITMA People Day data
-    into DuckDB Silver layer.
+    Crea la tabla silver_people_day si no existe.
+    silver_people_day está particionada por fecha para optimizar queries por fecha.
+    
+    Returns:
+    - Dict con status de la creación de la tabla
+    """
+    print("[TASK] Creating silver_people_day table if it doesn't exist")
+    
+    con = get_ducklake_connection()
+    
+    # Crear tabla primero
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS silver_people_day (
+            fecha DATE,
+            zona_pernoctacion VARCHAR,
+            edad VARCHAR,
+            sexo VARCHAR,
+            numero_viajes VARCHAR,
+            personas DOUBLE
+        );
+    """)
+    
+    # Configurar particionado por fecha (columna DATE - usar identity)
+    # Para columnas DATE, DuckLake recomienda usar identity (nombre de columna directamente)
+    # Las funciones year/month/day pueden causar problemas con columnas DATE
+    con.execute("""
+        ALTER TABLE silver_people_day SET PARTITIONED BY (fecha);
+    """)
+    
+    print("[TASK] Table silver_people_day created/verified successfully")
+    
+    return {
+        "status": "success",
+        "table": "silver_people_day"
+    }
 
+
+@task
+def SILVER_mitma_people_day_insert(**context):
+    """
+    Inserta datos transformados desde bronze_mitma_people_day_municipios a silver_people_day.
+    
     Returns:
     - Dict with task status and info
     """
-    print("[TASK] Building unified silver_people_day table")
+    print("[TASK] Inserting data into silver_people_day table")
 
     con = get_ducklake_connection()
-
-    con.execute(f"""
-        CREATE OR REPLACE TABLE silver_people_day AS
+    
+    # Insertar datos
+    con.execute("""
+        INSERT INTO silver_people_day
         WITH base AS (
             SELECT
                 strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::DATE as fecha,
@@ -47,11 +87,11 @@ def SILVER_mitma_people_day():
           AND edad IS NOT NULL
           AND sexo IS NOT NULL
           AND numero_viajes IS NOT NULL
-          AND personas IS NOT NULL
+          AND personas IS NOT NULL;
     """)
 
     count = con.execute("SELECT COUNT(*) AS count FROM silver_people_day").fetchdf()
-    print(f"[TASK] Created silver_people_day with {count.iloc[0]['count']:,} records")
+    print(f"[TASK] Inserted {count.iloc[0]['count']:,} records into silver_people_day")
 
     print(con.execute("SELECT * FROM silver_people_day LIMIT 10").fetchdf())
 

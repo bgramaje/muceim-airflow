@@ -12,8 +12,10 @@ from airflow.sdk import TaskGroup
 
 from silver.mitma import (
     SILVER_mitma_zonification,
-    SILVER_mitma_overnight_stay,
-    SILVER_mitma_people_day,
+    SILVER_mitma_overnight_stay_create_table,
+    SILVER_mitma_overnight_stay_insert,
+    SILVER_mitma_people_day_create_table,
+    SILVER_mitma_people_day_insert,
     SILVER_mitma_distances
 )
 from silver.mitma.mitma_od import (
@@ -97,6 +99,38 @@ def create_od_quality_batches_group(dag: DAG):
     return od_quality_group, od_quality_create_table
 
 
+def create_people_day_group(dag: DAG):
+    """Crea el TaskGroup para procesamiento de People Day."""
+    with TaskGroup(group_id="people_day", dag=dag) as people_day_group:
+        create_table = SILVER_mitma_people_day_create_table.override(
+            task_id="create_table"
+        )()
+        
+        insert_data = SILVER_mitma_people_day_insert.override(
+            task_id="insert_data"
+        )()
+        
+        create_table >> insert_data
+    
+    return people_day_group, insert_data
+
+
+def create_overnight_stay_group(dag: DAG):
+    """Crea el TaskGroup para procesamiento de Overnight Stay."""
+    with TaskGroup(group_id="overnight_stay", dag=dag) as overnight_group:
+        create_table = SILVER_mitma_overnight_stay_create_table.override(
+            task_id="create_table"
+        )()
+        
+        insert_data = SILVER_mitma_overnight_stay_insert.override(
+            task_id="insert_data"
+        )()
+        
+        create_table >> insert_data
+    
+    return overnight_group, insert_data
+
+
 with DAG(
     dag_id="silver",
     start_date=datetime(2025, 12, 1),
@@ -116,8 +150,12 @@ with DAG(
 
     # Silver layer tasks
     mitma_zonif = SILVER_mitma_zonification.override(task_id="zonification")()
-    mitma_overnights = SILVER_mitma_overnight_stay.override(task_id="overnights")()
-    mitma_people = SILVER_mitma_people_day.override(task_id="people_day")()
+    
+    # MITMA People Day con TaskGroup (create table + insert)
+    people_day_group, people_day_done = create_people_day_group(dag)
+    
+    # MITMA Overnight Stay con TaskGroup (create table + insert)
+    overnight_group, overnight_done = create_overnight_stay_group(dag)
     
     # MITMA OD con procesamiento por batches - TaskGroup
     od_group, od_done = create_mitma_od_batches_group(dag)
@@ -143,7 +181,7 @@ with DAG(
     
     # Otras tareas MITMA se ejecutan en paralelo después de start
     # Start is automatically triggered when all bronze assets are ready
-    start >> [mitma_overnights, mitma_people, od_group]
+    start >> [overnight_group, people_day_group, od_group]
     
     # Distances depende solo de zonification
     mitma_zonif >> mitma_distances

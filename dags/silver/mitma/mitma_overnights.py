@@ -16,19 +16,58 @@ from utils.utils import get_ducklake_connection
 
 
 @task
-def SILVER_mitma_overnight_stay():
+def SILVER_mitma_overnight_stay_create_table(**context):
     """
-    Airflow task to transform and standardize overnight stay data into DuckDB Silver layer.
+    Crea la tabla silver_overnight_stay si no existe.
+    silver_overnight_stay está particionada por fecha para optimizar queries por fecha.
+    
+    Returns:
+    - Dict con status de la creación de la tabla
+    """
+    print("[TASK] Creating silver_overnight_stay table if it doesn't exist")
+    
+    con = get_ducklake_connection()
+    
+    # Crear tabla primero
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS silver_overnight_stay (
+            fecha DATE,
+            zona_pernoctacion VARCHAR,
+            zona_residencia VARCHAR,
+            personas DOUBLE
+        );
+    """)
+    
+    # Configurar particionado por fecha (columna DATE - usar identity)
+    # Para columnas DATE, DuckLake recomienda usar identity (nombre de columna directamente)
+    # Las funciones year/month/day pueden causar problemas con columnas DATE
+    con.execute("""
+        ALTER TABLE silver_overnight_stay SET PARTITIONED BY (fecha);
+    """)
+    
+    print("[TASK] Table silver_overnight_stay created/verified successfully")
+    
+    return {
+        "status": "success",
+        "table": "silver_overnight_stay"
+    }
 
+
+@task
+def SILVER_mitma_overnight_stay_insert(**context):
+    """
+    Inserta datos transformados desde bronze_mitma_overnight_stay_municipios a silver_overnight_stay.
+    
     Returns:
     - Dict with task status and info
     """
-    print("[TASK] Building unified silver_overnight_stay table")
+    print("[TASK] Inserting data into silver_overnight_stay table")
 
     con = get_ducklake_connection()
-
+    
+    # Insertar datos
     con.execute("""
-        CREATE OR REPLACE TABLE silver_overnight_stay AS
+        INSERT INTO silver_overnight_stay
         WITH base AS (
             SELECT
                 strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::DATE as fecha,
@@ -42,11 +81,11 @@ def SILVER_mitma_overnight_stay():
         WHERE fecha IS NOT NULL
           AND zona_pernoctacion IS NOT NULL
           AND zona_residencia IS NOT NULL
-          AND personas IS NOT NULL
+          AND personas IS NOT NULL;
     """)
 
     count = con.execute("SELECT COUNT(*) AS count FROM silver_overnight_stay").fetchdf()
-    print(f"[TASK] Created silver_overnight_stay with {count.iloc[0]['count']:,} records")
+    print(f"[TASK] Inserted {count.iloc[0]['count']:,} records into silver_overnight_stay")
 
     print(con.execute("SELECT * FROM silver_overnight_stay LIMIT 10").fetchdf())
 
