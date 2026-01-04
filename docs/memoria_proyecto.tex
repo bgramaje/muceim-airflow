@@ -1,0 +1,1096 @@
+\documentclass[12pt,a4paper]{article}
+
+% ============ PAQUETES ============
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{fancyhdr}
+\usepackage{tikz}
+\usepackage{tcolorbox}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{tabularx}
+\usepackage{colortbl}
+
+% ============ CONFIGURACIÓN ============
+\geometry{
+    left=2.5cm,
+    right=2.5cm,
+    top=2.5cm,
+    bottom=2.5cm
+}
+
+% Colores personalizados
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+\definecolor{upvblue}{RGB}{0,90,156}
+\definecolor{upvorange}{RGB}{232,119,34}
+
+% Configuración de listings para código
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2,
+    frame=single,
+    framesep=3pt,
+    xleftmargin=15pt,
+    xrightmargin=5pt
+}
+\lstset{style=mystyle}
+
+% Estilo SQL
+\lstdefinelanguage{SQL}{
+    keywords={SELECT, FROM, WHERE, JOIN, LEFT, RIGHT, INNER, OUTER, ON, AS, AND, OR, NOT, IN, IS, NULL, CREATE, TABLE, INSERT, INTO, VALUES, UPDATE, SET, DELETE, DROP, ALTER, INDEX, GROUP, BY, ORDER, HAVING, DISTINCT, LIMIT, OFFSET, UNION, ALL, CASE, WHEN, THEN, ELSE, END, WITH, PARTITION, PARTITIONED, MERGE, USING, MATCHED, COALESCE, CAST, SUM, AVG, COUNT, MAX, MIN, INTERVAL, TIMESTAMP, VARCHAR, DOUBLE, BOOLEAN, INTEGER, DATE, REPLACE, IF, EXISTS},
+    sensitive=false,
+    morecomment=[l]{--},
+    morecomment=[s]{/*}{*/},
+    morestring=[b]',
+    morestring=[b]"
+}
+
+% Estilo Python
+\lstdefinelanguage{Python}{
+    keywords={def, return, if, else, elif, for, while, import, from, as, class, try, except, with, lambda, True, False, None, and, or, not, in, is},
+    sensitive=true,
+    morecomment=[l]{\#},
+    morestring=[b]',
+    morestring=[b]"
+}
+
+% Configuración de hyperref
+\hypersetup{
+    colorlinks=true,
+    linkcolor=upvblue,
+    filecolor=magenta,      
+    urlcolor=upvblue,
+    citecolor=upvblue,
+    pdftitle={Pipeline de Datos MITMA + INE},
+    pdfauthor={MUCEIM - UPV},
+}
+
+% Encabezados y pies de página
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Pipeline MITMA + INE}
+\fancyhead[R]{\small MUCEIM - Big Data}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% Box para notas
+\tcbuselibrary{skins,breakable}
+\newtcolorbox{notebox}[1][]{
+    colback=blue!5!white,
+    colframe=upvblue,
+    fonttitle=\bfseries,
+    title=#1,
+    breakable
+}
+
+\newtcolorbox{warnbox}[1][]{
+    colback=orange!5!white,
+    colframe=upvorange,
+    fonttitle=\bfseries,
+    title=#1,
+    breakable
+}
+
+\newtcolorbox{optimizebox}[1][]{
+    colback=green!5!white,
+    colframe=green!50!black,
+    fonttitle=\bfseries,
+    title=#1,
+    breakable
+}
+
+% ============ DOCUMENTO ============
+\begin{document}
+
+% ============ PORTADA ============
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    
+    {\Huge\bfseries Pipeline de Datos\\[0.5cm] MITMA + INE}\\[1cm]
+    
+    {\LARGE Ingesta y Transformación de Datos\\[0.3cm] de Movilidad en España}\\[2cm]
+    
+    % \includegraphics[width=0.3\textwidth]{upv_logo.png}\\[2cm]
+    
+    {\Large\bfseries Máster Universitario en Ciencia e\\Ingeniería de Datos (MUCEIM)}\\[0.5cm]
+    
+    {\large Universidad Politécnica de Valencia}\\[2cm]
+    
+    {\large Asignatura: \textbf{Big Data}}\\[1cm]
+    
+    \vfill
+    
+    {\large Curso 2024-2025}
+    
+\end{titlepage}
+
+% ============ ÍNDICE ============
+\tableofcontents
+\newpage
+
+% ============ INTRODUCCIÓN ============
+\section{Introducción}
+
+Este documento describe el pipeline de ingesta y transformación de datos de movilidad (MITMA) e indicadores socioeconómicos (INE) implementado con Apache Airflow. El sistema sigue una arquitectura \textbf{Medallion} (Bronze $\rightarrow$ Silver) con especial énfasis en:
+
+\begin{itemize}
+    \item \textbf{Procesamiento por batches} para manejar grandes volúmenes de datos
+    \item \textbf{Particionado temporal} para optimización de queries
+    \item \textbf{Idempotencia} mediante tracking de datos procesados
+    \item \textbf{Ejecución distribuida} en Google Cloud Run Jobs
+    \item \textbf{Dynamic Task Mapping} de Airflow para paralelización
+\end{itemize}
+
+\subsection{Objetivos}
+
+\begin{enumerate}
+    \item Automatizar la ingesta incremental de datos de movilidad del MITMA
+    \item Integrar datos socioeconómicos del INE con datos de movilidad
+    \item Implementar transformaciones eficientes con procesamiento por batches
+    \item Optimizar consultas mediante particionado temporal en Silver Layer
+    \item Garantizar idempotencia para permitir re-ejecuciones seguras
+\end{enumerate}
+
+% ============ ARQUITECTURA ============
+\section{Arquitectura General}
+
+\subsection{Stack Tecnológico}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Componente} & \textbf{Tecnología} & \textbf{Propósito} \\
+\midrule
+Orquestador & Apache Airflow 3.x & Scheduling, DAGs, Dynamic Task Mapping \\
+Data Lakehouse & DuckLake & Motor analítico sobre S3 + PostgreSQL \\
+Object Storage & RustFS (S3-compatible) & Almacenamiento de datos Parquet \\
+Metadata Store & PostgreSQL & Catálogo de tablas DuckLake \\
+Compute (Cloud) & Google Cloud Run Jobs & Ejecución de cargas pesadas (32GB RAM) \\
+\bottomrule
+\end{tabular}
+\caption{Stack tecnológico principal}
+\label{tab:stack}
+\end{table}
+
+\subsection{Arquitectura Medallion}
+
+La arquitectura Medallion organiza los datos en capas con niveles crecientes de refinamiento:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    layer/.style={rectangle, draw, minimum width=5cm, minimum height=2cm, align=center}
+]
+
+\node[layer, fill=orange!30] (bronze) at (0,0) {\textbf{BRONZE}\\Raw Data\\Schema flexible\\all\_varchar=true};
+\node[layer, fill=gray!30] (silver) at (7,0) {\textbf{SILVER}\\Cleaned \& Enriched\\Tipos correctos\\Particionado temporal};
+
+\draw[->, very thick] (bronze) -- node[above] {Transformaciones} node[below] {Batch Processing} (silver);
+
+\end{tikzpicture}
+\caption{Arquitectura Medallion}
+\end{figure}
+
+% ============ FUENTES DE DATOS ============
+\section{Fuentes de Datos (DataSources)}
+
+\subsection{MITMA - Ministerio de Transportes}
+
+\begin{notebox}[Origen]
+RSS Feed: \url{https://movilidad-opendata.mitma.es/RSS.xml}
+\end{notebox}
+
+El portal de datos abiertos de movilidad del MITMA proporciona datos de movilidad basados en datos de telefonía móvil anonimizados. Los archivos se publican diariamente en formato CSV comprimido (gzip).
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Dataset} & \textbf{Descripción} & \textbf{Formato} & \textbf{Tamaño aprox.} \\
+\midrule
+OD (Viajes) & Matrices Origen-Destino & CSV.GZ & 50-100 MB/día \\
+People Day & Personas por día según zona & CSV.GZ & 20-40 MB/día \\
+Overnight Stay & Pernoctaciones por zona & CSV.GZ & 15-30 MB/día \\
+Zonification & Geometrías de zonas & SHP/CSV & Estático \\
+\bottomrule
+\end{tabular}
+\caption{Datasets MITMA disponibles}
+\end{table}
+
+\textbf{Estructura de URL MITMA:}
+\begin{lstlisting}[language=bash, numbers=none]
+https://movilidad-opendata.mitma.es/estudios_basicos/
+  por-{zone_type}/{dataset}/ficheros-diarios/
+  {YYYY-MM}/{YYYYMMDD}_{Prefix}_{zone_type}.csv.gz
+\end{lstlisting}
+
+\textbf{Ejemplo para marzo 2023:}
+\begin{lstlisting}[language=bash, numbers=none]
+https://movilidad-opendata.mitma.es/estudios_basicos/
+  por-municipios/viajes/ficheros-diarios/2023-03/
+  20230306_Viajes_municipios.csv.gz
+\end{lstlisting}
+
+\subsection{INE - Instituto Nacional de Estadística}
+
+\begin{notebox}[Origen]
+API JSON: \url{https://servicios.ine.es/wstempus/js/ES/}
+\end{notebox}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Dataset} & \textbf{Endpoint} & \textbf{Descripción} \\
+\midrule
+Municipios & \texttt{VALORES\_VARIABLE/19} & Catálogo de municipios con códigos \\
+Empresas & \texttt{DATOS\_TABLA/3955?tip=AM} & Nº empresas por municipio y año \\
+Población & \texttt{DATOS\_TABLA/2852?tip=AM} & Población por municipio y sexo \\
+Renta & \texttt{DATOS\_TABLA/31097?tip=AM} & Renta per cápita por municipio \\
+\bottomrule
+\end{tabular}
+\caption{Endpoints de la API INE}
+\end{table}
+
+\subsection{MITMA-INE Relations}
+
+Tabla de correspondencia entre códigos MITMA y códigos INE, necesaria para cruzar datos de movilidad con datos socioeconómicos:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Campo} & \textbf{Tipo} & \textbf{Descripción} \\
+\midrule
+\texttt{municipio\_mitma} & VARCHAR & ID de zona MITMA \\
+\texttt{municipio\_ine} & VARCHAR & Código INE del municipio \\
+\bottomrule
+\end{tabular}
+\caption{Estructura de la tabla de relaciones MITMA-INE}
+\end{table}
+
+\subsection{Festivos Españoles}
+
+Se genera programáticamente la lista de festivos nacionales españoles usando la librería Python \texttt{holidays}. Se utiliza para enriquecer los datos de movilidad con flags \texttt{is\_holiday} en la capa Silver.
+
+% ============ BRONZE LAYER ============
+\section{Bronze Layer - Ingesta de Datos}
+
+La capa Bronze almacena los datos en formato crudo, con schema flexible y metadatos de auditoría.
+
+\subsection{Características de Bronze Layer}
+
+\begin{itemize}
+    \item \textbf{Schema flexible}: \texttt{all\_varchar = true} para evitar errores de tipos
+    \item \textbf{Sin transformaciones}: Datos tal como vienen de la fuente
+    \item \textbf{Metadatos de auditoría}:
+    \begin{itemize}
+        \item \texttt{loaded\_at}: Timestamp de ingesta
+        \item \texttt{source\_file}: URL/path del archivo origen (para tracking)
+    \end{itemize}
+\end{itemize}
+
+\subsection{Tablas Bronze}
+
+\begin{longtable}{@{}lll@{}}
+\toprule
+\textbf{Tabla} & \textbf{Fuente} & \textbf{Tracking Column} \\
+\midrule
+\endhead
+\texttt{bronze\_mitma\_od\_municipios} & MITMA RSS & \texttt{source\_file} \\
+\texttt{bronze\_mitma\_people\_day\_municipios} & MITMA RSS & \texttt{source\_file} \\
+\texttt{bronze\_mitma\_overnight\_stay\_municipios} & MITMA RSS & \texttt{source\_file} \\
+\texttt{bronze\_mitma\_municipios} & MITMA RSS & \texttt{ID} \\
+\texttt{bronze\_ine\_municipios} & INE API & \texttt{source\_url} \\
+\texttt{bronze\_ine\_empresas\_municipio} & INE API & \texttt{source\_url} \\
+\texttt{bronze\_ine\_poblacion\_municipio} & INE API & \texttt{source\_url} \\
+\texttt{bronze\_ine\_renta\_municipio} & INE API & \texttt{source\_url} \\
+\texttt{bronze\_mitma\_ine\_relations} & MITMA CSV & \texttt{source\_file} \\
+\texttt{bronze\_spanish\_holidays} & Python lib & \texttt{date} \\
+\bottomrule
+\caption{Tablas Bronze Layer}
+\end{longtable}
+
+\subsection{DAG bronze\_mitma}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Propiedad} & \textbf{Valor} \\
+\midrule
+Schedule & Manual (\texttt{schedule=None}) \\
+Tags & \texttt{bronze}, \texttt{mitma}, \texttt{data-ingestion} \\
+max\_active\_tasks & 4 (paralelismo controlado) \\
+max\_active\_runs & 1 (evitar concurrencia) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Parámetros:}
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Param} & \textbf{Tipo} & \textbf{Descripción} \\
+\midrule
+\texttt{start} & string & Fecha inicio (YYYY-MM-DD) \\
+\texttt{end} & string & Fecha fin (YYYY-MM-DD) \\
+\texttt{enable\_people\_day} & boolean & Habilitar ingesta People Day \\
+\texttt{enable\_overnight} & boolean & Habilitar ingesta Overnight \\
+\bottomrule
+\end{tabular}
+\caption{Parámetros del DAG bronze\_mitma}
+\end{table}
+
+% ============ OPTIMIZACIONES BRONZE ============
+\section{Optimizaciones en Bronze Layer}
+
+\subsection{Filtrado de URLs Ya Procesadas}
+
+\begin{optimizebox}[Idempotencia en Bronze]
+Antes de procesar cada URL, se consulta la tabla Bronze para verificar si ya ha sido ingestada. Esto permite re-ejecutar el DAG sin duplicar datos.
+\end{optimizebox}
+
+\begin{lstlisting}[language=Python, caption={Filtrado de URLs ya procesadas}]
+def _filter_csv_urls(table_name: str, urls: list[str]):
+    """
+    Filtra URLs ya ingestadas consultando source_file.
+    Permite re-ejecucion sin duplicados (idempotencia).
+    """
+    # 1. Verificar si la tabla existe
+    table_exists = con.execute(f"""
+        SELECT COUNT(*) as count 
+        FROM information_schema.tables 
+        WHERE table_name = '{table_name}'
+    """).fetchone()[0] > 0
+    
+    if not table_exists:
+        return urls  # Tabla no existe, procesar todas
+    
+    # 2. Consultar URLs ya ingestadas
+    url_list_str = "[" + ", ".join([f"'{u}'" for u in urls]) + "]"
+    
+    ingested_df = con.execute(f"""
+        WITH url_list AS (
+            SELECT unnest({url_list_str}) AS url_to_check
+        )
+        SELECT DISTINCT source_file 
+        FROM {table_name}
+        WHERE source_file IS NOT NULL
+          AND source_file IN (SELECT url_to_check FROM url_list)
+    """).fetchdf()
+    
+    ingested_urls = set(ingested_df['source_file'].tolist())
+    
+    # 3. Retornar solo URLs nuevas
+    new_urls = [url for url in urls if url not in ingested_urls]
+    
+    return new_urls
+\end{lstlisting}
+
+\subsection{Dynamic Task Mapping para Paralelización}
+
+\begin{optimizebox}[Paralelización con Dynamic Task Mapping]
+Airflow 2.3+ permite expandir dinámicamente tareas basándose en una lista de inputs. Esto permite procesar múltiples archivos en paralelo sin definir tareas estáticas.
+\end{optimizebox}
+
+\begin{lstlisting}[language=Python, caption={Dynamic Task Mapping para procesar URLs en paralelo}]
+# En el DAG bronze_mitma:
+
+# 1. Obtener URLs del RSS
+od_urls = BRONZE_mitma_od_urls(
+    zone_type="municipios",
+    start_date="{{ params.start }}",
+    end_date="{{ params.end }}",
+)
+
+# 2. Filtrar URLs ya procesadas
+od_filtered_urls = BRONZE_mitma_od_filter_urls(
+    urls=od_urls,
+    zone_type="municipios",
+)
+
+# 3. Procesar cada URL en paralelo (Dynamic Task Mapping)
+od_process = (
+    BRONZE_mitma_od_process
+    .override(
+        task_id="od_process",
+        pool="default_pool",  # Control de concurrencia
+    )
+    .partial(zone_type="municipios")
+    .expand(url=od_filtered_urls)  # Expande a N tareas
+)
+\end{lstlisting}
+
+\textbf{Resultado:} Si hay 30 URLs a procesar, Airflow crea 30 instancias de la tarea \texttt{od\_process}, ejecutándolas en paralelo según los límites del pool.
+
+\subsection{Flujo de Procesamiento con Cloud Run}
+
+Cada URL se procesa con el siguiente flujo optimizado:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm,
+    box/.style={rectangle, draw, minimum width=3.5cm, minimum height=0.8cm, align=center, fill=blue!10},
+    arrow/.style={->, thick}
+]
+
+\node[box] (download) at (0,0) {1. Descarga de MITMA};
+\node[box] (upload) at (0,-1.5) {2. Upload a RustFS S3};
+\node[box] (cloudrun) at (0,-3) {3. Cloud Run Job\\(MERGE INTO)};
+\node[box] (delete) at (0,-4.5) {4. Eliminar de RustFS};
+
+\draw[arrow] (download) -- (upload);
+\draw[arrow] (upload) -- (cloudrun);
+\draw[arrow] (cloudrun) -- (delete);
+
+\node[right=0.5cm of download, text width=5cm, font=\small] {Archivo CSV.GZ desde URL pública};
+\node[right=0.5cm of upload, text width=5cm, font=\small] {s3://mitma-raw/od/municipios/...};
+\node[right=0.5cm of cloudrun, text width=5cm, font=\small] {32GB RAM, 8 CPUs\\Lee S3 $\rightarrow$ MERGE DuckLake};
+\node[right=0.5cm of delete, text width=5cm, font=\small] {Liberar espacio temporal};
+
+\end{tikzpicture}
+\caption{Flujo de procesamiento por URL}
+\end{figure}
+
+\begin{lstlisting}[language=Python, caption={Task de procesamiento con Cloud Run}]
+@task
+def BRONZE_mitma_od_process(url: str, zone_type: str = 'municipios'):
+    """
+    Procesa una URL: descarga, sube a S3, ejecuta Cloud Run, limpia.
+    """
+    table_name = f'bronze_mitma_od_{zone_type}'
+    
+    # 1. Descargar y subir a RustFS
+    s3_path = download_url_to_rustfs(url, 'od', zone_type)
+    # Resultado: s3://mitma-raw/od/municipios/20230306_Viajes_municipios.csv.gz
+    
+    # 2. Ejecutar merge via Cloud Run (o local si no hay GCP)
+    result = merge_csv_or_cloud_run(
+        table_name=table_name, 
+        url=s3_path, 
+        original_url=url  # Para auditoria
+    )
+    
+    # 3. Eliminar archivo temporal de RustFS
+    delete_file_from_rustfs(s3_path)
+    
+    return {'status': 'success', 'url': url}
+\end{lstlisting}
+
+\subsection{Cloud Run Job: Ingestor}
+
+El Cloud Run Job ejecuta el MERGE en un entorno con recursos dedicados:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Recurso} & \textbf{Valor} \\
+\midrule
+Memoria RAM & 32 GB \\
+CPUs & 8 \\
+\texttt{memory\_limit} (DuckDB) & 28 GB \\
+\texttt{threads} (DuckDB) & 8 \\
+Timeout & 1 hora \\
+\bottomrule
+\end{tabular}
+\caption{Recursos del Cloud Run Job}
+\end{table}
+
+\begin{lstlisting}[language=Python, caption={Código del Cloud Run Job (ingestor)}]
+def main():
+    table_name = os.environ.get("TABLE_NAME")
+    s3_path = os.environ.get("URL")
+    original_url = os.environ.get("ORIGINAL_URL")
+    
+    # Configuracion DuckDB optimizada para 32GB RAM
+    config = {
+        'memory_limit': '28GB',
+        'threads': 8,
+        'worker_threads': 8,
+        'max_temp_directory_size': '200GiB'
+    }
+    con = get_ducklake_connection(duckdb_config=config)
+    
+    # Leer CSV en tabla temporal (staging)
+    con.execute(f"""
+        CREATE TEMP TABLE staging AS
+        SELECT 
+            * EXCLUDE (filename),
+            CURRENT_TIMESTAMP AS loaded_at,
+            '{original_url}' AS source_file
+        FROM read_csv('{s3_path}', all_varchar=true)
+    """)
+    
+    # MERGE: insertar solo registros nuevos
+    con.execute(f"""
+        MERGE INTO {table_name} AS target
+        USING staging AS source
+        ON {build_merge_condition(columns)}
+        WHEN NOT MATCHED THEN INSERT *;
+    """)
+\end{lstlisting}
+
+\subsection{Control de Concurrencia con Pools}
+
+\begin{optimizebox}[Pools de Airflow]
+Los pools permiten limitar la concurrencia de tareas que compiten por recursos compartidos (DuckLake, Cloud Run, etc.)
+\end{optimizebox}
+
+\begin{lstlisting}[language=Python, caption={Configuración de pools para control de concurrencia}]
+# Limitar a N tareas concurrentes en el pool
+od_process = (
+    BRONZE_mitma_od_process.override(
+        task_id="od_process",
+        pool="default_pool",        # Pool compartido
+        pool_slots=128,             # Slots consumidos por tarea
+        max_active_tis_per_dag=1,   # Max instancias por DAG run
+    )
+    .partial(zone_type=zone_type)
+    .expand(url=od_filtered_urls)
+)
+\end{lstlisting}
+
+% ============ SILVER LAYER ============
+\section{Silver Layer - Transformaciones}
+
+La capa Silver contiene datos limpios, con tipos correctos y optimizados para consultas analíticas.
+
+\subsection{Características de Silver Layer}
+
+\begin{itemize}
+    \item \textbf{Tipos de datos correctos}: TIMESTAMP, DOUBLE, BOOLEAN, etc.
+    \item \textbf{Filtros de calidad}: Eliminación de nulls y valores inválidos
+    \item \textbf{Enriquecimiento}: Flags calculados (\texttt{is\_weekend}, \texttt{is\_holiday})
+    \item \textbf{Deduplicación}: Agregación por claves de negocio
+    \item \textbf{Particionado temporal}: Por año/mes/día para optimizar queries
+\end{itemize}
+
+\subsection{Tablas Silver}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Tabla} & \textbf{Particionado} & \textbf{Descripción} \\
+\midrule
+\texttt{silver\_mitma\_od} & year/month/day & Viajes O-D limpios \\
+\texttt{silver\_people\_day} & - & Personas por día \\
+\texttt{silver\_overnight\_stay} & - & Pernoctaciones \\
+\texttt{silver\_zones} & - & Geometrías + centroides \\
+\texttt{silver\_mitma\_distances} & - & Distancias entre zonas \\
+\texttt{silver\_mitma\_ine\_mapping} & - & Mapping MITMA $\leftrightarrow$ INE \\
+\texttt{silver\_ine\_all} & - & Datos INE consolidados \\
+\bottomrule
+\end{tabular}
+\caption{Tablas Silver Layer}
+\end{table}
+
+\subsection{DAG silver}
+
+\begin{notebox}[Trigger Automático con Datasets]
+El DAG Silver se dispara automáticamente cuando los 3 DAGs Bronze completan exitosamente, usando Airflow Datasets:
+\end{notebox}
+
+\begin{lstlisting}[language=Python, caption={Configuración de schedule por datasets}]
+with DAG(
+    dag_id="silver",
+    schedule=[
+        Dataset("bronze://mitma/done"), 
+        Dataset("bronze://ine/done"), 
+        Dataset("bronze://holidays/done")
+    ],
+    catchup=False,
+    # ...
+) as dag:
+    # Tasks...
+\end{lstlisting}
+
+% ============ OPTIMIZACIONES SILVER ============
+\section{Optimizaciones en Silver Layer}
+
+\subsection{Procesamiento por Batches de Fechas}
+
+\begin{optimizebox}[Batch Processing]
+En lugar de procesar todos los datos de una vez (que podría exceder memoria), se divide el trabajo en batches de fechas. Cada batch se procesa independientemente.
+\end{optimizebox}
+
+\begin{lstlisting}[language=Python, caption={Obtención de batches de fechas no procesadas}]
+@task
+def SILVER_mitma_od_get_date_batches(batch_size: int = 7) -> List[Dict]:
+    """
+    Obtiene fechas no procesadas y las divide en batches.
+    
+    Args:
+        batch_size: Numero de fechas por batch (default: 7 = 1 semana)
+    
+    Returns:
+        Lista de dicts: [{'batch_index': 0, 'fechas': ['20230301', ...]}, ...]
+    """
+    # Consultar fechas en bronze que NO estan en la tabla de tracking
+    query = """
+        SELECT DISTINCT b.fecha
+        FROM bronze_mitma_od_municipios b
+        WHERE b.fecha IS NOT NULL
+            AND CAST(b.fecha AS VARCHAR) NOT IN (
+                SELECT fecha 
+                FROM silver_mitma_od_processed_dates
+            )
+        ORDER BY b.fecha
+    """
+    
+    df = con.execute(query).fetchdf()
+    fechas = sorted([str(f) for f in df['fecha'].unique()])
+    
+    # Dividir en batches
+    batches = []
+    for i in range(0, len(fechas), batch_size):
+        batches.append({
+            'batch_index': i // batch_size,
+            'fechas': fechas[i:i + batch_size]
+        })
+    
+    return batches  # Ej: [{'batch_index': 0, 'fechas': ['20230301', '20230302', ...]}]
+\end{lstlisting}
+
+\subsection{Dynamic Task Mapping para Batches}
+
+Cada batch se procesa en paralelo usando Dynamic Task Mapping:
+
+\begin{lstlisting}[language=Python, caption={Procesamiento paralelo de batches}]
+# En el DAG silver:
+
+# 1. Crear tabla si no existe
+od_create_table = SILVER_mitma_od_create_table()
+
+# 2. Obtener batches de fechas no procesadas
+od_date_batches = SILVER_mitma_od_get_date_batches(batch_size=7)
+
+# 3. Procesar cada batch en paralelo
+od_process_batches = (
+    SILVER_mitma_od_process_batch
+    .override(
+        task_id="process_batch",
+        pool="od_pool",
+        pool_slots=15,  # Control de recursos
+    )
+    .expand(date_batch=od_date_batches)  # N batches = N tareas
+)
+
+od_create_table >> od_date_batches >> od_process_batches
+\end{lstlisting}
+
+\subsection{Tabla de Tracking de Fechas Procesadas}
+
+\begin{optimizebox}[Idempotencia en Silver]
+La tabla \texttt{silver\_mitma\_od\_processed\_dates} almacena las fechas ya procesadas. Esto permite:
+\begin{itemize}
+    \item Re-ejecutar el DAG sin reprocesar datos
+    \item Procesar incrementalmente solo fechas nuevas
+    \item Recuperación ante fallos (continuar desde donde se quedó)
+\end{itemize}
+\end{optimizebox}
+
+\begin{lstlisting}[language=SQL, caption={Estructura de la tabla de tracking}]
+CREATE TABLE IF NOT EXISTS silver_mitma_od_processed_dates (
+    fecha VARCHAR PRIMARY KEY  -- Formato: 'YYYYMMDD'
+);
+\end{lstlisting}
+
+\textbf{Flujo de tracking:}
+
+\begin{enumerate}
+    \item \textbf{Antes de procesar}: Consultar fechas no procesadas
+    \item \textbf{Durante el batch}: INSERT INTO silver\_mitma\_od
+    \item \textbf{Después del batch}: MERGE fechas en tabla de tracking
+\end{enumerate}
+
+\begin{lstlisting}[language=SQL, caption={Registro de fechas procesadas}]
+-- Al final de cada batch, registrar fechas procesadas
+MERGE INTO silver_mitma_od_processed_dates AS target
+USING (
+    SELECT fecha::VARCHAR AS fecha
+    FROM (VALUES ('20230301'), ('20230302'), ('20230303'))
+    AS t(fecha)
+) AS source
+ON target.fecha = source.fecha
+WHEN NOT MATCHED THEN
+    INSERT (fecha) VALUES (source.fecha);
+\end{lstlisting}
+
+\subsection{Particionado Temporal para Optimización de Queries}
+
+\begin{optimizebox}[Particionado por year/month/day]
+La tabla \texttt{silver\_mitma\_od} está particionada por año, mes y día. Esto permite a DuckDB hacer \textbf{partition pruning}: solo leer los archivos Parquet relevantes para el rango de fechas consultado.
+\end{optimizebox}
+
+\begin{lstlisting}[language=SQL, caption={Creación de tabla con particionado temporal}]
+-- Crear tabla Silver OD
+CREATE TABLE IF NOT EXISTS silver_mitma_od (
+    fecha TIMESTAMP,
+    origen_zone_id VARCHAR,
+    destino_zone_id VARCHAR,
+    viajes DOUBLE,
+    viajes_km DOUBLE,
+    residencia VARCHAR,
+    is_weekend BOOLEAN,
+    is_holiday BOOLEAN
+);
+
+-- Configurar particionado por funciones de fecha
+ALTER TABLE silver_mitma_od 
+SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));
+\end{lstlisting}
+
+\textbf{Estructura de archivos en S3:}
+\begin{lstlisting}[language=bash, numbers=none]
+s3://mitma/silver_mitma_od/
+  year=2023/
+    month=3/
+      day=1/
+        data_0.parquet
+        data_1.parquet
+      day=2/
+        data_0.parquet
+      ...
+    month=4/
+      day=1/
+        ...
+\end{lstlisting}
+
+\textbf{Beneficio en queries:}
+\begin{lstlisting}[language=SQL, caption={Query optimizada con partition pruning}]
+-- Esta query solo lee los archivos de marzo 2023
+-- DuckDB hace partition pruning automaticamente
+SELECT 
+    origen_zone_id,
+    destino_zone_id,
+    SUM(viajes) as total_viajes
+FROM silver_mitma_od
+WHERE fecha >= '2023-03-01' 
+  AND fecha < '2023-04-01'
+GROUP BY 1, 2;
+
+-- Sin particionado: leeria TODOS los archivos
+-- Con particionado: solo lee year=2023/month=3/
+\end{lstlisting}
+
+\subsection{Transformación Silver OD Completa}
+
+\begin{lstlisting}[language=SQL, caption={Transformación Bronze $\rightarrow$ Silver OD}]
+INSERT INTO silver_mitma_od 
+    (fecha, origen_zone_id, destino_zone_id, viajes, viajes_km, 
+     residencia, is_weekend, is_holiday)
+WITH base AS (
+    SELECT
+        -- Parse fecha + hora desde campos separados
+        strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::TIMESTAMP 
+            + (periodo::INTEGER * INTERVAL 1 HOUR) AS fecha,
+        origen AS origen_zone_id,
+        destino AS destino_zone_id,
+        CAST(viajes AS DOUBLE) AS viajes,
+        CAST(viajes_km AS DOUBLE) AS viajes_km,
+        residencia
+    FROM bronze_mitma_od_municipios
+    WHERE 
+        -- Filtrar por batch de fechas
+        fecha IN ('20230301', '20230302', '20230303', ...)
+        -- Filtros de calidad
+        AND fecha IS NOT NULL
+        AND periodo IS NOT NULL
+        AND origen IS NOT NULL
+        AND origen != 'externo'  -- Excluir viajes externos
+        AND destino IS NOT NULL
+        AND destino != 'externo'
+        AND viajes IS NOT NULL
+        AND viajes_km IS NOT NULL
+        AND residencia IS NOT NULL
+),
+enriched AS (
+    SELECT 
+        b.*,
+        -- Flag de fin de semana (DuckDB: 0=domingo, 6=sabado)
+        EXTRACT(DOW FROM DATE(b.fecha)) IN (0, 6) AS is_weekend,
+        -- Flag de festivo (LEFT JOIN con tabla de festivos)
+        CASE WHEN h.date IS NOT NULL THEN TRUE ELSE FALSE END AS is_holiday
+    FROM base b
+    LEFT JOIN bronze_spanish_holidays h 
+        ON DATE(b.fecha) = h.date
+)
+-- Agregar por clave unica (evitar duplicados)
+SELECT
+    fecha,
+    origen_zone_id,
+    destino_zone_id,
+    SUM(viajes) AS viajes,
+    SUM(viajes_km) AS viajes_km,
+    residencia,
+    MAX(is_weekend) AS is_weekend,
+    MAX(is_holiday) AS is_holiday
+FROM enriched
+GROUP BY fecha, origen_zone_id, destino_zone_id, residencia;
+\end{lstlisting}
+
+\subsection{Bug Conocido: MERGE + Particionado con Funciones}
+
+\begin{warnbox}[Bug de DuckLake]
+Al usar \texttt{MERGE INTO} con tablas particionadas por funciones (\texttt{year(fecha)}), se generan valores de partición incorrectos (números enormes en lugar de años).
+\end{warnbox}
+
+\textbf{Problema:}
+\begin{lstlisting}[language=SQL, numbers=none]
+-- NO FUNCIONA correctamente
+MERGE INTO silver_mitma_od AS target
+USING source ON ...
+WHEN NOT MATCHED THEN INSERT *;
+
+-- Genera particiones corruptas:
+-- year=-1977503543602676920/ (en lugar de year=2023/)
+\end{lstlisting}
+
+\textbf{Solución implementada:}
+\begin{lstlisting}[language=SQL, numbers=none]
+-- FUNCIONA: usar INSERT INTO en lugar de MERGE
+INSERT INTO silver_mitma_od (...)
+SELECT ... FROM source;
+
+-- El particionado funciona correctamente:
+-- year=2023/month=3/day=6/
+\end{lstlisting}
+
+La idempotencia se mantiene gracias a la tabla de tracking \texttt{silver\_mitma\_od\_processed\_dates}.
+
+\subsection{Transformación Silver Zones}
+
+\begin{lstlisting}[language=SQL, caption={Transformación de zonificación con geometrías}]
+CREATE OR REPLACE TABLE silver_zones AS
+SELECT DISTINCT
+    z.ID AS id,
+    z.Nombre AS nombre,
+    -- Convertir WKT a geometria y normalizar a MultiPolygon
+    ST_Multi(ST_GeomFromText(z.geometry)) AS geometry_obj,
+    -- Calcular centroide para calculo de distancias
+    ST_Centroid(ST_GeomFromText(z.geometry)) AS centroid
+FROM bronze_mitma_municipios z
+-- Solo incluir zonas que tienen mapping INE
+LEFT JOIN silver_mitma_ine_mapping m 
+    ON z.ID = m.municipio_mitma
+WHERE 
+    z.ID IS NOT NULL
+    AND z.Nombre IS NOT NULL
+    AND z.geometry IS NOT NULL
+    AND m.municipio_mitma IS NOT NULL;  -- Filtro por cobertura
+\end{lstlisting}
+
+\subsection{Cálculo de Distancias entre Zonas}
+
+\begin{lstlisting}[language=SQL, caption={Cálculo de distancias esféricas entre centroides}]
+-- Cargar extension espacial
+INSTALL spatial; LOAD spatial;
+
+CREATE OR REPLACE TABLE silver_mitma_distances AS
+SELECT 
+    o.id AS origin,
+    d.id AS destination,
+    -- Distancia esferica en km
+    ST_Distance_Sphere(o.centroid, d.centroid) / 1000.0 AS distance_km
+FROM silver_zones o
+CROSS JOIN silver_zones d
+WHERE o.id < d.id;  -- Evitar duplicados (solo pares unicos)
+\end{lstlisting}
+
+% ============ EJECUCIÓN ============
+\section{Ejecución del Pipeline}
+
+\subsection{Paso 1: Ingesta Bronze}
+
+\begin{lstlisting}[language=bash, caption={Trigger de DAGs Bronze}]
+# Trigger MITMA para marzo 2023 (solo OD)
+airflow dags trigger bronze_mitma \
+  --conf '{"start": "2023-03-01", "end": "2023-03-31", 
+           "enable_people_day": false, "enable_overnight": false}'
+
+# Trigger INE para 2023
+airflow dags trigger bronze_ine \
+  --conf '{"year": "2023"}'
+
+# Trigger Holidays para 2023
+airflow dags trigger bronze_holidays \
+  --conf '{"year": 2023}'
+\end{lstlisting}
+
+\subsection{Paso 2: Transformación Silver}
+
+El DAG Silver se dispara automáticamente cuando los 3 Bronze DAGs completan (Airflow Datasets).
+
+Si se necesita trigger manual:
+\begin{lstlisting}[language=bash, numbers=none]
+airflow dags trigger silver
+\end{lstlisting}
+
+\subsection{Re-ejecución Segura}
+
+Gracias al sistema de tracking, los DAGs pueden re-ejecutarse de forma segura:
+
+\begin{lstlisting}[language=bash, caption={Re-ejecución idempotente}]
+# Re-ejecutar Bronze (solo procesa URLs nuevas)
+airflow dags trigger bronze_mitma \
+  --conf '{"start": "2023-03-01", "end": "2023-03-31"}'
+# Resultado: "0 new URLs to ingest" si ya fueron procesadas
+
+# Re-ejecutar Silver (solo procesa fechas nuevas)
+airflow dags trigger silver
+# Resultado: "No unprocessed dates found" si ya fueron procesadas
+\end{lstlisting}
+
+% ============ RESUMEN DE OPTIMIZACIONES ============
+\section{Resumen de Optimizaciones}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Optimización} & \textbf{Capa} & \textbf{Beneficio} \\
+\midrule
+Filtrado de URLs procesadas & Bronze & Idempotencia, no duplicados \\
+Dynamic Task Mapping & Bronze/Silver & Paralelización automática \\
+Cloud Run Jobs (32GB) & Bronze & Recursos dedicados para MERGE \\
+Pools de Airflow & Bronze/Silver & Control de concurrencia \\
+Procesamiento por batches & Silver & Memoria controlada \\
+Tabla de tracking de fechas & Silver & Idempotencia, incremental \\
+Particionado temporal & Silver & Partition pruning en queries \\
+INSERT vs MERGE & Silver & Workaround bug DuckLake \\
+\bottomrule
+\end{tabular}
+\caption{Resumen de optimizaciones implementadas}
+\end{table}
+
+% ============ ESTRUCTURA DEL PROYECTO ============
+\section{Estructura del Proyecto}
+
+\begin{lstlisting}[language=bash, caption={Árbol de directorios}, numbers=none]
+airflow/
+|-- dags/
+|   |-- bronze/
+|   |   |-- bronze_mitma_dag.py      # DAG ingesta MITMA
+|   |   |-- bronze_ine_dag.py        # DAG ingesta INE
+|   |   |-- bronze_holidays_dag.py   # DAG festivos
+|   |   |-- tasks/
+|   |   |   |-- mitma/               # Tasks MITMA
+|   |   |   |-- ine/                 # Tasks INE
+|   |   |   |-- holidays/            # Tasks festivos
+|   |   |-- utils.py                 # Filtrado, merge, etc.
+|   |
+|   |-- silver/
+|   |   |-- silver_dag.py            # DAG transformaciones
+|   |   |-- mitma/
+|   |   |   |-- mitma_od.py          # Batch processing OD
+|   |   |   |-- mitma_zonification.py
+|   |   |   |-- mitma_distances.py
+|   |   |-- ine/
+|   |   |   |-- ine_all.py           # Consolidacion INE
+|   |
+|   |-- misc/
+|   |   |-- infra.py                 # TaskGroup infraestructura
+|   |
+|   |-- utils/
+|       |-- utils.py                 # DuckLake connection
+|       |-- gcp.py                   # Cloud Run utilities
+|
+|-- gcp/
+|   |-- ingestor_cloud/              # Cloud Run: MERGE CSV
+|   |   |-- main.py
+|   |   |-- Dockerfile
+|   |-- executor_cloud/              # Cloud Run: SQL executor
+|       |-- main.py
+|       |-- Dockerfile
+|
+|-- docs/
+|   |-- bronze_to_silver_transformations.md
+|   |-- memoria_proyecto.tex         # Este documento
+\end{lstlisting}
+
+% ============ CONCLUSIONES ============
+\section{Conclusiones}
+
+Este proyecto implementa un pipeline robusto de ingesta y transformación de datos con las siguientes características:
+
+\begin{enumerate}
+    \item \textbf{Escalabilidad}: Dynamic Task Mapping permite procesar N archivos/batches en paralelo sin modificar código
+    
+    \item \textbf{Eficiencia}: Cloud Run Jobs con 32GB RAM permiten procesar archivos grandes sin agotar recursos del worker
+    
+    \item \textbf{Idempotencia}: Tablas de tracking garantizan que re-ejecuciones no dupliquen datos
+    
+    \item \textbf{Rendimiento de queries}: Particionado temporal permite partition pruning, reduciendo drásticamente el tiempo de consultas filtradas por fecha
+    
+    \item \textbf{Mantenibilidad}: Arquitectura Medallion separa claramente responsabilidades entre capas
+\end{enumerate}
+
+\subsection{Métricas de Rendimiento}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Operación} & \textbf{Sin optimización} & \textbf{Con optimización} \\
+\midrule
+Ingesta 1 mes OD & Secuencial, 2+ horas & Paralelo, $\sim$30 min \\
+Query Silver (1 mes) & Scan completo & Partition pruning \\
+Re-ejecución DAG & Duplica datos & Skip procesados \\
+Memoria worker & OOM en archivos grandes & Cloud Run 32GB \\
+\bottomrule
+\end{tabular}
+\caption{Comparativa de rendimiento}
+\end{table}
+
+% ============ REFERENCIAS ============
+\section{Referencias}
+
+\begin{enumerate}
+    \item Portal de datos abiertos MITMA: \url{https://movilidad-opendata.mitma.es/}
+    \item API INE: \url{https://servicios.ine.es/wstempus/}
+    \item DuckDB Documentation: \url{https://duckdb.org/docs/}
+    \item Apache Airflow - Dynamic Task Mapping: \url{https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/dynamic-task-mapping.html}
+    \item DuckLake: \url{https://github.com/duckdb/duckdb}
+\end{enumerate}
+
+\end{document}

@@ -170,7 +170,9 @@ def SILVER_mitma_od_create_table(**context) -> Dict:
             destino_zone_id VARCHAR,
             viajes DOUBLE,
             viajes_km DOUBLE,
-            residencia VARCHAR
+            residencia VARCHAR,
+            is_weekend BOOLEAN,
+            is_holiday BOOLEAN
         );
         
         CREATE TABLE IF NOT EXISTS silver_mitma_od_processed_dates (
@@ -233,7 +235,7 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
         SET enable_object_cache=true;
         
         -- INSERT INTO (sin MERGE) para probar particionado con funciones
-        INSERT INTO silver_mitma_od (fecha, origen_zone_id, destino_zone_id, viajes, viajes_km, residencia)
+        INSERT INTO silver_mitma_od (fecha, origen_zone_id, destino_zone_id, viajes, viajes_km, residencia, is_weekend, is_holiday)
         WITH base AS (
             SELECT
                 strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::TIMESTAMP + (periodo::INTEGER * INTERVAL 1 HOUR) AS fecha,
@@ -256,6 +258,17 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
                 AND viajes IS NOT NULL
                 AND viajes_km IS NOT NULL
                 AND residencia IS NOT NULL
+        ),
+        enriched AS (
+            SELECT 
+                b.*,
+                -- Calcular is_weekend (DuckDB: 0=domingo, 6=sábado)
+                EXTRACT(DOW FROM DATE(b.fecha)) IN (0, 6) AS is_weekend,
+                -- Calcular is_holiday con LEFT JOIN
+                CASE WHEN h.date IS NOT NULL THEN TRUE ELSE FALSE END AS is_holiday
+            FROM base b
+            LEFT JOIN bronze_spanish_holidays h 
+                ON DATE(b.fecha) = h.date
         )
         -- Agrupar por clave única y sumar viajes y viajes_km
         SELECT
@@ -264,8 +277,10 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
             destino_zone_id,
             SUM(viajes) AS viajes,
             SUM(viajes_km) AS viajes_km,
-            residencia
-        FROM base
+            residencia,
+            MAX(is_weekend) AS is_weekend,  -- Todos los registros del mismo día tienen el mismo valor
+            MAX(is_holiday) AS is_holiday    -- Todos los registros del mismo día tienen el mismo valor
+        FROM enriched
         GROUP BY fecha, origen_zone_id, destino_zone_id, residencia;
         
         -- Registrar fechas procesadas directamente desde el batch (optimizado, sin consultar bronze)
