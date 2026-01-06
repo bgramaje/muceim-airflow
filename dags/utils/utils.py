@@ -37,10 +37,10 @@ def _get_default_duckdb_config():
     - dict: Default configuration parameters for DuckDB
     """
     return {
-        'memory_limit': '4GB',
-        'threads': 4,
-        'worker_threads': 4,
-        'max_temp_directory_size': '40GiB',
+        'memory_limit': '8GB',
+        'threads': 6,
+        'worker_threads': 6,
+        'max_temp_directory_size': '80GiB',
         'temp_directory': '/tmp/duckdb',
         'enable_object_cache': True,
     }
@@ -189,21 +189,21 @@ class DuckLakeConnectionManager:
         databases = con.execute("SELECT database_name FROM duckdb_databases();").fetchdf()
         if 'ducklake' not in databases['database_name'].values:
             # Configuración mejorada de PostgreSQL para evitar cierres inesperados de SSL
-            # sslmode=prefer: intenta usar SSL pero continúa sin SSL si hay problemas (más robusto que require)
-            # keepalives_idle: tiempo antes de enviar el primer keepalive (20s)
-            # keepalives_interval: intervalo entre keepalives (5s)
-            # keepalives_count: número de keepalives antes de considerar la conexión muerta (3)
-            # tcp_user_timeout: timeout total de TCP (20s)
-            # connect_timeout: timeout para establecer conexión (30s)
+            # sslmode=disable: deshabilita SSL completamente para evitar problemas de conexión
+            # keepalives_idle: tiempo antes de enviar el primer keepalive (60s, muy largo para evitar timeouts)
+            # keepalives_interval: intervalo entre keepalives (30s, muy largo)
+            # keepalives_count: número de keepalives antes de considerar la conexión muerta (10, muchos intentos)
+            # tcp_user_timeout: timeout total de TCP (300s, muy largo)
+            # connect_timeout: timeout para establecer conexión (60s, más largo)
             postgres_connection_string = f"""
                 dbname={POSTGRES_DB} host={POSTGRES_HOST} user={POSTGRES_USER} password={POSTGRES_PASSWORD} port={POSTGRES_PORT} 
                 sslmode=prefer 
-                connect_timeout=30 
+                connect_timeout=60 
                 keepalives=1 
-                keepalives_idle=20 
-                keepalives_interval=5 
-                keepalives_count=3 
-                tcp_user_timeout=20000
+                keepalives_idle=60 
+                keepalives_interval=30 
+                keepalives_count=10 
+                tcp_user_timeout=300000
             """
             attach_query = f"""
                 ATTACH 'ducklake:postgres:{postgres_connection_string}' AS ducklake (DATA_PATH 's3://{RUSTFS_BUCKET}/');

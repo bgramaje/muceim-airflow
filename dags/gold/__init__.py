@@ -1,4 +1,4 @@
 """
-Gold layer DAGs for analytics and business insights.
+Gold Layer Airflow Tasks Package
 """
 

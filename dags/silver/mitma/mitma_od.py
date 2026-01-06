@@ -49,6 +49,8 @@ def SILVER_mitma_od_get_date_batches(batch_size: int = 30, **context) -> List[Di
     y las divide en batches de tamaño fijo.
     Hace el proceso idempotente al solo procesar fechas nuevas.
     
+    Si la tabla silver_mitma_od_processed_dates no existe, procesa todas las fechas.
+    
     Parameters:
     - batch_size: Número de fechas por batch (default: 30)
     
@@ -59,18 +61,41 @@ def SILVER_mitma_od_get_date_batches(batch_size: int = 30, **context) -> List[Di
     
     con = get_ducklake_connection()
     
-    query = """
-        SELECT DISTINCT 
-            b.fecha
-        FROM bronze_mitma_od_municipios b
-        WHERE b.fecha IS NOT NULL
-            AND CAST(b.fecha AS VARCHAR) NOT IN (
-                SELECT fecha 
-                FROM silver_mitma_od_processed_dates
-                WHERE fecha IS NOT NULL
-            )
-        ORDER BY b.fecha
-    """
+    # Verificar si la tabla silver_mitma_od_processed_dates existe
+    table_exists = False
+    try:
+        result = con.execute("""
+            SELECT COUNT(*) as cnt FROM information_schema.tables 
+            WHERE table_schema = 'main' AND table_name = 'silver_mitma_od_processed_dates'
+        """).fetchone()
+        table_exists = result[0] > 0
+    except Exception as e:
+        print(f"[TASK] Error checking if table exists: {e}")
+        table_exists = False
+    
+    if not table_exists:
+        print("[TASK] Table silver_mitma_od_processed_dates does not exist. Processing all dates from bronze table.")
+        query = """
+            SELECT DISTINCT 
+                b.fecha
+            FROM bronze_mitma_od_municipios b
+            WHERE b.fecha IS NOT NULL
+            ORDER BY b.fecha
+        """
+    else:
+        print("[TASK] Table silver_mitma_od_processed_dates exists. Excluding already processed dates.")
+        query = """
+            SELECT DISTINCT 
+                b.fecha
+            FROM bronze_mitma_od_municipios b
+            WHERE b.fecha IS NOT NULL
+                AND CAST(b.fecha AS VARCHAR) NOT IN (
+                    SELECT fecha 
+                    FROM silver_mitma_od_processed_dates
+                    WHERE fecha IS NOT NULL
+                )
+            ORDER BY b.fecha
+        """
     
     df = con.execute(query).fetchdf()
     

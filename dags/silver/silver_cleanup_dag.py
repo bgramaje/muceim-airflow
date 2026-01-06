@@ -56,7 +56,7 @@ with DAG(
         3. Return a summary of dropped tables
         
         **Tables that will be dropped:**
-        - silver_od
+        - silver_mitma_od
         - silver_od_quality
         - silver_od_processed_dates
         - silver_overnight_stay

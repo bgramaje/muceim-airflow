@@ -302,6 +302,7 @@ def exec_gcp_ducklake_ingestor(
 
 def exec_gcp_ducklake_executor(
     sql_query: str,
+    post_process_func=None,
     **context
 ) -> Dict:
     """
@@ -311,13 +312,19 @@ def exec_gcp_ducklake_executor(
     1. Se conecta a DuckLake
     2. Ejecuta la consulta SQL proporcionada
     3. Se ejecuta y termina automáticamente
+    4. Opcionalmente ejecuta una función de postprocesamiento localmente
     
     Parameters:
     - sql_query: Consulta SQL a ejecutar (puede contener múltiples sentencias separadas por ;)
+    - post_process_func: Función opcional que se ejecuta después de la SQL.
+                        Recibe (con, result_dict) donde:
+                        - con: conexión DuckDB (para queries adicionales)
+                        - result_dict: dict con el resultado de la ejecución
+                        Debe retornar un dict que se mergeará con el resultado.
     - **context: Contexto de Airflow (se pasa automáticamente)
     
     Returns:
-    - Dict con información del resultado
+    - Dict con información del resultado (mergeado con el resultado de post_process_func si existe)
     
     Raises:
     - ValueError: Si falta configuración requerida
@@ -336,6 +343,48 @@ def exec_gcp_ducklake_executor(
     env_vars_list = [
         {'name': 'SQL_QUERY', 'value': sql_query},
     ]
+    
+    # Si hay función de postprocesamiento, serializarla como código Python
+    if post_process_func:
+        import inspect
+        import base64
+        import zlib
+        
+        # Obtener el código fuente de la función
+        try:
+            func_code = inspect.getsource(post_process_func)
+            
+            # Intentar obtener las variables globales que la función necesita
+            # (como constantes SQL definidas en el módulo)
+            func_globals = post_process_func.__globals__ if hasattr(post_process_func, '__globals__') else {}
+            
+            # Incluir imports necesarios y constantes en el código
+            imports_and_constants = []
+            
+            # Detectar si usa numpy
+            if 'np.' in func_code or 'numpy' in func_code:
+                imports_and_constants.append("import numpy as np")
+            
+            # Detectar si usa pandas
+            if 'pd.' in func_code or 'pandas' in func_code:
+                imports_and_constants.append("import pandas as pd")
+            
+            # Incluir constantes SQL si existen (buscar patrones como *_SQL)
+            for name, value in func_globals.items():
+                if name.endswith('_SQL') and isinstance(value, str):
+                    imports_and_constants.append(f"{name} = {repr(value)}")
+            
+            # Combinar imports/constantes con el código de la función
+            full_code = '\n'.join(imports_and_constants) + '\n\n' + func_code
+            
+            # Comprimir y codificar en base64 para pasarlo como variable de entorno
+            compressed = zlib.compress(full_code.encode('utf-8'))
+            encoded = base64.b64encode(compressed).decode('utf-8')
+            env_vars_list.append({'name': 'POST_PROCESS_CODE', 'value': encoded})
+            env_vars_list.append({'name': 'POST_PROCESS_FUNC_NAME', 'value': post_process_func.__name__})
+        except Exception as e:
+            print(f"[WARNING] Could not serialize post_process_func: {str(e)}")
+            print("[WARNING] Post-processing will be skipped in Cloud Run")
     
     try:
         client = run_v2.JobsClient(credentials=credentials)
@@ -366,32 +415,90 @@ def exec_gcp_ducklake_executor(
         _wait_for_cloud_run_execution(executions_client, execution_name)
         elapsed_time = time.time() - start_time
         
-        return {
+        result = {
             'status': 'success',
             'message': 'SQL query executed successfully',
             'execution_name': execution_name,
             'execution_time_seconds': int(elapsed_time)
         }
         
+        # Intentar obtener el resultado del post-procesamiento desde los logs de Cloud Run
+        if post_process_func and 'POST_PROCESS_CODE' in [e['name'] for e in env_vars_list]:
+            try:
+                from google.cloud import logging as cloud_logging
+                import json
+                import re
+                
+                logging_client = cloud_logging.Client()
+                execution_id = execution_name.split('/')[-1]
+                
+                # Buscar el resultado del post-procesamiento en los logs
+                log_filter = f'resource.type="cloud_run_job" AND textPayload=~".*POST_PROCESS_RESULT.*" AND labels.execution_name="{execution_id}"'
+                entries = logging_client.list_entries(
+                    filter_=log_filter,
+                    max_results=1,
+                    order_by=cloud_logging.DESCENDING
+                )
+                
+                for entry in entries:
+                    if hasattr(entry, 'text_payload') and entry.text_payload:
+                        # Extraer el JSON del log
+                        match = re.search(r'POST_PROCESS_RESULT:\s*({.*})', entry.text_payload)
+                        if match:
+                            post_result = json.loads(match.group(1))
+                            if post_result and isinstance(post_result, dict):
+                                result.update(post_result)
+                                print(f"[INFO] Post-processing result retrieved from Cloud Run logs")
+                                break
+            except Exception as log_error:
+                print(f"[WARNING] Could not retrieve post-processing result from logs: {str(log_error)}")
+        
+        # Si no hay Cloud Run o la función no se pudo serializar, ejecutar localmente
+        if post_process_func and 'POST_PROCESS_CODE' not in [e['name'] for e in env_vars_list]:
+            from utils.utils import get_ducklake_connection
+            con = get_ducklake_connection()
+            try:
+                # Detectar si es SELECT para capturar el DataFrame
+                sql_upper = sql_query.strip().upper()
+                is_select = sql_upper.startswith('SELECT') or sql_upper.startswith('WITH')
+                
+                if is_select:
+                    df_result = con.execute(sql_query).fetchdf()
+                    post_result = post_process_func(df_result, con, result)
+                else:
+                    post_result = post_process_func(None, con, result)
+                    
+                if post_result and isinstance(post_result, dict):
+                    result.update(post_result)
+            except Exception as e:
+                print(f"[WARNING] Post-processing function failed: {str(e)}")
+        
+        return result
+        
     except Exception as e:
         error_msg = f"Failed to execute Cloud Run Job: {str(e)}"
         raise RuntimeError(error_msg) from e
 
 
-def execute_sql_or_cloud_run(sql_query: str, **context) -> Dict:
+def execute_sql_or_cloud_run(sql_query: str, post_process_func=None, **context) -> Dict:
     """
     Ejecuta una consulta SQL usando Cloud Run si está disponible, o localmente como fallback.
     Esta función decide automáticamente qué método usar.
     
     Parameters:
     - sql_query: Consulta SQL a ejecutar
+    - post_process_func: Función opcional que se ejecuta después de la SQL.
+                        Recibe (con, result_dict) donde:
+                        - con: conexión DuckDB (para queries adicionales)
+                        - result_dict: dict con el resultado de la ejecución
+                        Debe retornar un dict que se mergeará con el resultado.
     - **context: Contexto de Airflow
     
     Returns:
-    - Dict con información del resultado
+    - Dict con información del resultado (mergeado con el resultado de post_process_func si existe)
     """
     if _get_cloud_run_connection():
-        return exec_gcp_ducklake_executor(sql_query=sql_query, **context)
+        return exec_gcp_ducklake_executor(sql_query=sql_query, post_process_func=post_process_func, **context)
     else:
         # Ejecutar localmente
         import time
@@ -401,16 +508,44 @@ def execute_sql_or_cloud_run(sql_query: str, **context) -> Dict:
         
         try:
             con = get_ducklake_connection()
-            con.execute(sql_query)
+            
+            # Detectar si es SELECT para capturar el DataFrame
+            sql_upper = sql_query.strip().upper()
+            is_select = sql_upper.startswith('SELECT') or sql_upper.startswith('WITH')
+            
+            df_result = None
+            if is_select and post_process_func:
+                # Si es SELECT y hay post-procesamiento, capturar el DataFrame
+                df_result = con.execute(sql_query).fetchdf()
+            else:
+                # Si no es SELECT o no hay post-procesamiento, ejecutar normalmente
+                con.execute(sql_query)
             
             elapsed_time = time.time() - start_time
             
-            return {
+            result = {
                 'status': 'success',
                 'message': 'SQL query executed successfully (local)',
                 'execution_name': 'local',
                 'execution_time_seconds': int(elapsed_time)
             }
+            
+            # Ejecutar función de postprocesamiento si existe
+            if post_process_func:
+                try:
+                    # Pasar DataFrame como primer parámetro si existe
+                    if df_result is not None:
+                        post_result = post_process_func(df_result, con, result)
+                    else:
+                        post_result = post_process_func(None, con, result)
+                    
+                    if post_result and isinstance(post_result, dict):
+                        result.update(post_result)
+                except Exception as e:
+                    print(f"[WARNING] Post-processing function failed: {str(e)}")
+                    # No fallamos la tarea si el post-procesamiento falla, solo logueamos
+            
+            return result
             
         except Exception as e:
             error_msg = f"Failed to execute SQL locally: {str(e)}"
