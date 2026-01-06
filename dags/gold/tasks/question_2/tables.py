@@ -97,29 +97,30 @@ BEST_K_VALUE_SQL = """
 """
 
 
-def _post_process_best_k_value(df, con, result_dict):
+def _post_process_gravity_model_complete(df, con, result_dict):
     """
-    Post-processing function for best_k_value calculation.
-    Receives the DataFrame from the SQL query and calculates optimal k using numpy.
-
+    Post-processing function that calculates best_k_value and creates gold_gravity_mismatch table.
+    This combines both operations in a single Cloud Run execution.
+    
     Parameters:
-    - df: DataFrame result from the SQL query (or None if query was not SELECT)
-    - con: DuckDB connection (for additional queries if needed)
+    - df: DataFrame result from the SQL query (BEST_K_VALUE_SQL)
+    - con: DuckDB connection
     - result_dict: Result dictionary from SQL execution
-
+    
     Returns:
-    - Dict with best_k_value
+    - Dict with best_k_value, table name and record count
     """
     # Imports necesarios (se incluyen en el código serializado)
     import numpy as np
     
-    print("[TASK] Calculating best k value using RMSE minimization")
-
-    # Si no tenemos DataFrame (query no era SELECT), ejecutar la query
+    print("[TASK] Calculating best k value and creating gravity model table")
+    
+    # Si no tenemos DataFrame, ejecutar la query
     if df is None:
         df = con.execute(BEST_K_VALUE_SQL).fetchdf()
-
-    # Calculate optimal k using numpy
+    
+    # 1. Calculate optimal k using numpy
+    print("[TASK] Calculating best k value using RMSE minimization")
     k_values = np.linspace(10e-5, 1, 5000)
     rmse_list = []
 
@@ -130,87 +131,85 @@ def _post_process_best_k_value(df, con, result_dict):
 
     best_k = float(k_values[np.argmin(rmse_list)])
     print(f"[TASK] Best k value found: {best_k}")
-
-    return {
-        "best_k_value": best_k
-    }
-
-
-@task
-def GOLD_get_best_k_value(**context):
-    """
-    Calculate the optimal k value for the gravity model using RMSE minimization.
-
-    The heavy SQL query is executed in Cloud Run (if available), and the
-    numpy-based optimization runs locally in the post-processing function.
-
-    Returns:
-    - float: The optimal k value that minimizes RMSE
-    """
-    print("[TASK] Calculating best k value for gravity model")
-
-    # Execute SQL query (can use Cloud Run) with post-processing
-    # The post_process_func will run locally to do the numpy calculation
-    result = execute_sql_or_cloud_run(
-        sql_query=BEST_K_VALUE_SQL,
-        post_process_func=_post_process_best_k_value,
-        **context
-    )
-
-    best_k = result.get('best_k_value')
-    if best_k is None:
-        raise RuntimeError("Failed to calculate best k value")
-
-    return best_k
-
-
-def _post_process_gravity_model(df, con, result_dict):
-    """
-    Post-processing function for gravity_model table.
-    Gets the record count and adds it to the result.
     
-    Parameters:
-    - df: DataFrame result from the SQL query (or None if query was not SELECT)
-    - con: DuckDB connection (for additional queries if needed)
-    - result_dict: Result dictionary from SQL execution
+    # 2. Create gold_gravity_mismatch table with the calculated k_value
+    print(f"[TASK] Creating gold_gravity_mismatch table with k={best_k}")
     
-    Returns:
-    - Dict with additional fields to merge into result
+    # Inline SQL generation (no need for _get_gravity_model_sql function)
+    gravity_sql = f"""
+        CREATE OR REPLACE TABLE gold_gravity_mismatch AS
+        WITH actual_trips AS (
+            SELECT
+                origen_zone_id,
+                destino_zone_id,
+                DATE(fecha) AS date,
+                SUM(viajes) AS actual_viajes
+            FROM silver_mitma_od
+            GROUP BY 1,2,3
+        ),
+        zone_attributes AS (
+            SELECT
+                z.id AS zone_id,
+                i.poblacion_total AS population,
+                i.empresas AS economic_activity
+            FROM silver_zones z
+                LEFT JOIN silver_ine_all i ON z.id = i.id
+        ),
+        distances AS (
+            SELECT
+                origin AS origen_zone_id,
+                destination AS destino_zone_id,
+                distance_km
+            FROM silver_mitma_distances
+        )
+        SELECT
+            a.origen_zone_id AS origin_id,
+            a.destino_zone_id AS destination_id,
+            a.date AS date,
+            a.actual_viajes AS actual_trips,
+            {best_k} * ((za.population * zb.economic_activity) / NULLIF(d.distance_km * d.distance_km, 0)) AS estimated_trips,
+            a.actual_viajes / estimated_trips AS mismatch_ratio
+        FROM actual_trips a
+            JOIN zone_attributes za ON a.origen_zone_id = za.zone_id
+            JOIN zone_attributes zb ON a.destino_zone_id = zb.zone_id
+            JOIN distances d ON a.origen_zone_id = d.origen_zone_id
+                AND a.destino_zone_id = d.destino_zone_id;
     """
-    # Para CREATE TABLE, siempre necesitamos hacer un COUNT
+    con.execute(gravity_sql)
+    
+    # 3. Get record count
     count = con.execute("SELECT COUNT(*) AS count FROM gold_gravity_mismatch").fetchdf()
     record_count = int(count.iloc[0]['count'])
     print(f"[TASK] Created gold_gravity_mismatch with {record_count:,} records")
     
     return {
+        "best_k_value": best_k,
         "table": "gold_gravity_mismatch",
         "records": record_count
     }
 
 
 @task
-def GOLD_gravity_model(k_value: float, **context):
+def GOLD_gravity_model(**context):
     """
-    Airflow task to create gold_gravity_mismatch table.
-
-    This task creates a gold layer table comparing actual vs estimated trips
-    using the gravity model. The heavy SQL computation is delegated to 
-    Cloud Run when available for better performance.
-
-    Parameters:
-    - k_value: The calibration constant for the gravity model
+    Airflow task to calculate best k value and create gold_gravity_mismatch table.
+    
+    This task combines both operations:
+    1. Calculates the optimal k value using RMSE minimization
+    2. Creates the gold_gravity_mismatch table with that k value
+    
+    Everything runs in Cloud Run (if available) for better performance.
 
     Returns:
     - Dict with task status and info
     """
-    print(
-        f"[TASK] Building gold_gravity_mismatch table with k={k_value} (Business Question 2)")
+    print("[TASK] Building gold_gravity_mismatch table with best k value (Business Question 2)")
 
-    # Execute the SQL query with post-processing function
-    # The post_process_func will run in Cloud Run (if available) with the DataFrame
+    # Execute SQL query with post-processing function
+    # The post_process_func calculates k_value and creates the table in Cloud Run
     result = execute_sql_or_cloud_run(
-        sql_query=_get_gravity_model_sql(k_value),
-        post_process_func=_post_process_gravity_model,
+        sql_query=BEST_K_VALUE_SQL,
+        post_process_func=_post_process_gravity_model_complete,
         **context
     )
 
@@ -220,6 +219,6 @@ def GOLD_gravity_model(k_value: float, **context):
         "status": "success",
         "table": result.get("table", "gold_gravity_mismatch"),
         "records": result.get("records", 0),
-        "k_value": k_value,
+        "best_k_value": result.get("best_k_value"),
         "execution_time_seconds": result.get('execution_time_seconds', 0)
     }

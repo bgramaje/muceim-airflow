@@ -7,7 +7,7 @@ and are uploaded to S3.
 """
 
 from datetime import datetime, timedelta
-from airflow.models import Param
+from airflow.models import Param, Variable
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.sdk import task
 from airflow import DAG
@@ -47,15 +47,16 @@ def generate_directory(start_date: str = None, end_date: str = None, polygon_wkt
     short_id = hashlib.md5(combined.encode()).hexdigest()[:4]
 
     content = f"Start date: {start_date}\nEnd date: {end_date}\n\n{polygon_wkt}"
+    bucket_name = Variable.get('RUSTFS_BUCKET', default_var='mitma')
     s3 = S3Hook(aws_conn_id="rustfs_s3_conn")
     s3_key = f"gold/{short_id}/info.txt"
     s3.load_string(
         string_data=content,
         key=s3_key,
-        bucket_name="mitma",
+        bucket_name=bucket_name,
         replace=True
     )
-    print(f"[SUCCESS] Uploaded to s3://mitma/{s3_key}")
+    print(f"[SUCCESS] Uploaded to s3://{bucket_name}/{s3_key}")
     return short_id
 
 
@@ -87,7 +88,7 @@ with DAG(
         polygon_wkt="{{ params.polygon }}"
     )
 
-    # Question 1: Typical day reports
+    # Question 1: Typical day reports (sequential execution)
     with TaskGroup("question_1", tooltip="Typical Day Tasks") as q1_group:
         typ_day_map = GOLD_generate_typical_day_map.override(task_id="typical_day_map")(
             save_id=save_id,
@@ -107,6 +108,9 @@ with DAG(
             end_date="{{ params.end }}",
             polygon_wkt="{{ params.polygon }}"
         )
+        
+        # Sequential execution: map -> top_origins -> hourly_distribution
+        typ_day_map >> typ_day_top >> typ_day_hourly
 
     # Question 2: Gravity model reports
     with TaskGroup("question_2", tooltip="Gravity Model Tasks") as q2_group:

@@ -340,9 +340,39 @@ def exec_gcp_ducklake_executor(
     credentials, region, project_id = conn_info
     job_name = Variable.get('GCP_CLOUD_RUN_EXECUTOR_JOB_NAME', default_var='ducklake-executor')
     
+    # Get S3 credentials from Airflow connection to pass to Cloud Run
+    try:
+        from airflow.sdk.bases.hook import BaseHook
+        s3_conn = BaseHook.get_connection('rustfs_s3_conn')
+        s3_extra = s3_conn.extra_dejson
+        endpoint_url = s3_extra.get('endpoint_url', 'http://rustfs:9000')
+        s3_endpoint = endpoint_url.replace('http://', '').replace('https://', '')
+        rustfs_user = s3_extra.get('aws_access_key_id', 'admin')
+        rustfs_password = s3_extra.get('aws_secret_access_key', 'muceim-duckduck.2025!')
+        rustfs_ssl = 'true' if 'https' in endpoint_url else 'false'
+        rustfs_bucket = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+    except Exception as e:
+        print(f"[WARNING] Could not get S3 credentials from Airflow connection: {str(e)}")
+        # Use defaults if connection not available
+        s3_endpoint = "rustfs:9000"
+        rustfs_user = "admin"
+        rustfs_password = "muceim-duckduck.2025!"
+        rustfs_ssl = "false"
+        rustfs_bucket = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+    
     env_vars_list = [
         {'name': 'SQL_QUERY', 'value': sql_query},
+        {'name': 'S3_ENDPOINT', 'value': s3_endpoint},
+        {'name': 'RUSTFS_USER', 'value': rustfs_user},
+        {'name': 'RUSTFS_PASSWORD', 'value': rustfs_password},
+        {'name': 'RUSTFS_SSL', 'value': rustfs_ssl},
+        {'name': 'RUSTFS_BUCKET', 'value': rustfs_bucket},
     ]
+    
+    # Add extra environment variables from context if provided
+    extra_env_vars = context.get('extra_env_vars', {})
+    for key, value in extra_env_vars.items():
+        env_vars_list.append({'name': key, 'value': str(value)})
     
     # Si hay función de postprocesamiento, serializarla como código Python
     if post_process_func:
@@ -419,36 +449,39 @@ def exec_gcp_ducklake_executor(
             'execution_time_seconds': int(elapsed_time)
         }
         
-        # Intentar obtener el resultado del post-procesamiento desde los logs de Cloud Run
+        # Intentar recuperar el resultado del post-procesamiento desde los logs de Cloud Run
         if post_process_func and 'POST_PROCESS_CODE' in [e['name'] for e in env_vars_list]:
             try:
                 from google.cloud import logging as cloud_logging
                 import json
-                import re
                 
                 logging_client = cloud_logging.Client()
                 execution_id = execution_name.split('/')[-1]
                 
-                # Buscar el resultado del post-procesamiento en los logs
-                log_filter = f'resource.type="cloud_run_job" AND textPayload=~".*POST_PROCESS_RESULT.*" AND labels.execution_name="{execution_id}"'
+                # Buscar el resultado en los logs
+                log_filter = f'resource.type="cloud_run_job" AND textPayload=~".*POST_PROCESS_RESULT_JSON.*"'
                 entries = logging_client.list_entries(
                     filter_=log_filter,
-                    max_results=1,
+                    max_results=10,
                     order_by=cloud_logging.DESCENDING
                 )
                 
                 for entry in entries:
                     if hasattr(entry, 'text_payload') and entry.text_payload:
-                        # Extraer el JSON del log
-                        match = re.search(r'POST_PROCESS_RESULT:\s*({.*})', entry.text_payload)
-                        if match:
-                            post_result = json.loads(match.group(1))
-                            if post_result and isinstance(post_result, dict):
-                                result.update(post_result)
-                                print(f"[INFO] Post-processing result retrieved from Cloud Run logs")
-                                break
+                        # Buscar la línea con el resultado
+                        for line in entry.text_payload.split('\n'):
+                            if 'POST_PROCESS_RESULT_JSON:' in line:
+                                result_json_str = line.split('POST_PROCESS_RESULT_JSON:', 1)[1].strip()
+                                post_result = json.loads(result_json_str)
+                                if post_result and isinstance(post_result, dict):
+                                    result.update(post_result)
+                                    print(f"[INFO] Post-processing result retrieved from Cloud Run logs")
+                                    break
+                        if 'best_k_value' in result or 'records' in result or 'table' in result:
+                            break
             except Exception as log_error:
-                print(f"[WARNING] Could not retrieve post-processing result from logs: {str(log_error)}")
+                # Si no se pueden leer los logs, no es crítico - el post-procesamiento se ejecutó
+                print(f"[INFO] Post-processing executed in Cloud Run (could not retrieve result from logs: {str(log_error)})")
         
         # Si no hay Cloud Run o la función no se pudo serializar, ejecutar localmente
         if post_process_func and 'POST_PROCESS_CODE' not in [e['name'] for e in env_vars_list]:

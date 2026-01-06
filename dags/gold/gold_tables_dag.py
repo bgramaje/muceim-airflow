@@ -13,7 +13,6 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 
 from gold.tasks import (
     GOLD_typical_day,
-    GOLD_get_best_k_value,
     GOLD_gravity_model,
     GOLD_functional_type
 )
@@ -36,13 +35,11 @@ with DAG(
     # Question 1: Typical Day (uses Cloud Run for heavy SQL)
     typ_day = GOLD_typical_day.override(task_id="typical_day")()
     
-    # Question 2: Gravity Model (uses Cloud Run for heavy SQL)
-    k_value = GOLD_get_best_k_value.override(task_id="best_k_value")()
-    grav_model = GOLD_gravity_model.override(task_id="gravity_model")(k_value)
+    # Question 2: Gravity Model (calculates best k and creates table in one task)
+    grav_model = GOLD_gravity_model.override(task_id="gravity_model")()
 
     # Question 3: Functional Type (runs locally - requires sklearn)
     func_type = GOLD_functional_type.override(task_id="functional_type")()
 
     # Dependencies
-    start >> k_value >> grav_model >> done
-    start >> [typ_day, func_type] >> done
+    start >> [typ_day, grav_model, func_type] >> done

@@ -78,12 +78,12 @@ def main():
                     post_result = post_process_func(df_result, con, namespace['result_dict'])
                     
                     if post_result and isinstance(post_result, dict):
-                        # Serializar el resultado para poder recuperarlo después
+                        # Imprimir el resultado en un formato parseable para recuperarlo desde los logs
                         import json
                         result_json = json.dumps(post_result, default=str)
-                        print(f"[CLOUD_RUN_JOB] POST_PROCESS_RESULT: {result_json}")
-                    else:
-                        print(f"[CLOUD_RUN_JOB] Post-processing returned no result")
+                        print(f"POST_PROCESS_RESULT_JSON:{result_json}")
+                    
+                    print(f"[CLOUD_RUN_JOB] Post-processing completed")
                 else:
                     print(f"[WARNING] Post-processing function '{post_process_func_name}' not found in code")
                     
