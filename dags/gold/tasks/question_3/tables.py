@@ -57,30 +57,39 @@ def _post_process_functional_type(df, con, result_dict):
     Post-processing function for functional_type table.
     Receives the DataFrame from the SQL query and performs KMeans clustering
     to classify zones as Residential or Non-residential.
-    
+
     Parameters:
     - df: DataFrame result from the SQL query
     - con: DuckDB connection (for creating the table)
     - result_dict: Result dictionary from SQL execution
-    
+
     Returns:
     - Dict with table name and record count
     """
-    print("[TASK] Processing functional type classification with KMeans clustering")
+    # Imports necesarios (se incluyen en el código serializado)
+    import pandas as pd
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.cluster import KMeans
     
+    print("[TASK] Processing functional type classification with KMeans clustering")
+
     # Si no tenemos DataFrame, no podemos continuar
     if df is None:
-        raise ValueError("DataFrame is required for functional type classification")
-    
+        raise ValueError(
+            "DataFrame is required for functional type classification")
+
     temp_df = df.copy()
-    
-    dow_map = {0: 'sunday', 1: 'monday', 2: 'tuesday', 3: 'wednesday', 
-            4: 'thursday', 5: 'friday', 6: 'saturday'}
+
+    dow_map = {0: 'sunday', 1: 'monday', 2: 'tuesday', 3: 'wednesday',
+               4: 'thursday', 5: 'friday', 6: 'saturday'}
     temp_df['day'] = temp_df['dow'].map(dow_map)
 
-    temp_df['is_weekend'] = temp_df['day'].isin(['saturday','sunday']).astype(int)
+    temp_df['is_weekend'] = temp_df['day'].isin(
+        ['saturday', 'sunday']).astype(int)
     temp_df['diff_out_in'] = temp_df['avg_out_trips'] - temp_df['avg_in_trips']
-    features = ['avg_out_trips','avg_in_trips','dow','hour','is_weekend','diff_out_in']
+    features = ['avg_out_trips', 'avg_in_trips',
+                'dow', 'hour', 'is_weekend', 'diff_out_in']
     X_numeric = temp_df[features]
 
     # Handle Missing Values
@@ -94,9 +103,11 @@ def _post_process_functional_type(df, con, result_dict):
     temp_df['cluster'] = kmeans.fit_predict(X_scaled)
 
     # Identify each cluster
-    zone_clusters = temp_df.groupby('zone_id')['cluster'].agg(lambda x: x.value_counts().idxmax()).reset_index()
-    zone_clusters.rename(columns={'cluster':'final_cluster'}, inplace=True)
-    cluster_stats = temp_df.groupby('cluster')[['avg_out_trips','avg_in_trips']].mean()
+    zone_clusters = temp_df.groupby('zone_id')['cluster'].agg(
+        lambda x: x.value_counts().idxmax()).reset_index()
+    zone_clusters.rename(columns={'cluster': 'final_cluster'}, inplace=True)
+    cluster_stats = temp_df.groupby(
+        'cluster')[['avg_out_trips', 'avg_in_trips']].mean()
     industrial_cluster_id = cluster_stats.apply(
         lambda row: row.avg_out_trips > row.avg_in_trips, axis=1
     ).idxmax()
@@ -107,7 +118,7 @@ def _post_process_functional_type(df, con, result_dict):
     )
 
     # Add to DuckLake
-    gold_zones = zone_clusters[['zone_id','functional_type']]
+    gold_zones = zone_clusters[['zone_id', 'functional_type']]
     insert_values = ",\n".join([
         f"('{row.zone_id}', '{row.functional_type}')"
         for idx, row in gold_zones.iterrows()
@@ -119,9 +130,8 @@ def _post_process_functional_type(df, con, result_dict):
         ) AS t(zone_id, functional_type)
     """)
 
-    
     print(f"[TASK] Created gold_zone_functional_type")
-    
+
     return {
         "table": "gold_zone_functional_type",
     }
@@ -131,15 +141,15 @@ def _post_process_functional_type(df, con, result_dict):
 def GOLD_functional_type(**context):
     """
     Airflow task to create gold_zone_functional_type table.
-    
+
     The heavy SQL query is executed in Cloud Run (if available), and the
     sklearn-based clustering runs in the post-processing function.
-    
+
     Returns:
     - Dict with task status and info
     """
     print("[TASK] Building gold_zone_functional_type table (Business Question 3)")
-    
+
     # Execute SQL query with post-processing function
     # The post_process_func will run in Cloud Run (if available) with the DataFrame
     result = execute_sql_or_cloud_run(
@@ -147,7 +157,7 @@ def GOLD_functional_type(**context):
         post_process_func=_post_process_functional_type,
         **context
     )
-    
+
     print(f"[TASK] Execution: {result.get('execution_name', 'unknown')}")
 
     return {
@@ -155,4 +165,3 @@ def GOLD_functional_type(**context):
         "table": result.get("table", "gold_zone_functional_type"),
         "execution_time_seconds": result.get('execution_time_seconds', 0)
     }
-

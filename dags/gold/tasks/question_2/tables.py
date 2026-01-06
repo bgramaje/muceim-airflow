@@ -110,7 +110,14 @@ def _post_process_best_k_value(df, con, result_dict):
     Returns:
     - Dict with best_k_value
     """
+    # Imports necesarios (se incluyen en el código serializado)
+    import numpy as np
+    
     print("[TASK] Calculating best k value using RMSE minimization")
+
+    # Si no tenemos DataFrame (query no era SELECT), ejecutar la query
+    if df is None:
+        df = con.execute(BEST_K_VALUE_SQL).fetchdf()
 
     # Calculate optimal k using numpy
     k_values = np.linspace(10e-5, 1, 5000)
@@ -157,6 +164,30 @@ def GOLD_get_best_k_value(**context):
     return best_k
 
 
+def _post_process_gravity_model(df, con, result_dict):
+    """
+    Post-processing function for gravity_model table.
+    Gets the record count and adds it to the result.
+    
+    Parameters:
+    - df: DataFrame result from the SQL query (or None if query was not SELECT)
+    - con: DuckDB connection (for additional queries if needed)
+    - result_dict: Result dictionary from SQL execution
+    
+    Returns:
+    - Dict with additional fields to merge into result
+    """
+    # Para CREATE TABLE, siempre necesitamos hacer un COUNT
+    count = con.execute("SELECT COUNT(*) AS count FROM gold_gravity_mismatch").fetchdf()
+    record_count = int(count.iloc[0]['count'])
+    print(f"[TASK] Created gold_gravity_mismatch with {record_count:,} records")
+    
+    return {
+        "table": "gold_gravity_mismatch",
+        "records": record_count
+    }
+
+
 @task
 def GOLD_gravity_model(k_value: float, **context):
     """
@@ -176,9 +207,10 @@ def GOLD_gravity_model(k_value: float, **context):
         f"[TASK] Building gold_gravity_mismatch table with k={k_value} (Business Question 2)")
 
     # Execute the SQL query with post-processing function
-    # The post_process_func will run locally after SQL execution (Cloud Run or local)
+    # The post_process_func will run in Cloud Run (if available) with the DataFrame
     result = execute_sql_or_cloud_run(
         sql_query=_get_gravity_model_sql(k_value),
+        post_process_func=_post_process_gravity_model,
         **context
     )
 
@@ -187,6 +219,7 @@ def GOLD_gravity_model(k_value: float, **context):
     return {
         "status": "success",
         "table": result.get("table", "gold_gravity_mismatch"),
+        "records": result.get("records", 0),
         "k_value": k_value,
-        "execution_time_seconds": result.get('GOLD_gravity_model', 0)
+        "execution_time_seconds": result.get('execution_time_seconds', 0)
     }

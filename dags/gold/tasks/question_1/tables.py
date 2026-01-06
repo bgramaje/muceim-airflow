@@ -45,6 +45,30 @@ GOLD_TYPICAL_DAY_SQL = """
 """
 
 
+def _post_process_typical_day(df, con, result_dict):
+    """
+    Post-processing function for typical_day table.
+    Gets the record count and adds it to the result.
+    
+    Parameters:
+    - df: DataFrame result from the SQL query (or None if query was not SELECT)
+    - con: DuckDB connection (for additional queries if needed)
+    - result_dict: Result dictionary from SQL execution
+    
+    Returns:
+    - Dict with additional fields to merge into result
+    """
+    # Para CREATE TABLE, siempre necesitamos hacer un COUNT
+    count = con.execute("SELECT COUNT(*) AS count FROM gold_typical_day_od_hourly").fetchdf()
+    record_count = int(count.iloc[0]['count'])
+    print(f"[TASK] Created gold_typical_day_od_hourly with {record_count:,} records")
+    
+    return {
+        "table": "gold_typical_day_od_hourly",
+        "records": record_count
+    }
+
+
 @task
 def GOLD_typical_day(**context):
     """
@@ -60,9 +84,10 @@ def GOLD_typical_day(**context):
     print("[TASK] Building gold_typical_day_od_hourly table (Business Question 1)")
 
     # Execute the SQL query with post-processing function
-    # The post_process_func will run locally after SQL execution (Cloud Run or local)
+    # The post_process_func will run in Cloud Run (if available) with the DataFrame
     result = execute_sql_or_cloud_run(
         sql_query=GOLD_TYPICAL_DAY_SQL,
+        post_process_func=_post_process_typical_day,
         **context
     )
 

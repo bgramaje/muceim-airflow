@@ -358,24 +358,21 @@ def exec_gcp_ducklake_executor(
             # (como constantes SQL definidas en el módulo)
             func_globals = post_process_func.__globals__ if hasattr(post_process_func, '__globals__') else {}
             
-            # Incluir imports necesarios y constantes en el código
-            imports_and_constants = []
-            
-            # Detectar si usa numpy
-            if 'np.' in func_code or 'numpy' in func_code:
-                imports_and_constants.append("import numpy as np")
-            
-            # Detectar si usa pandas
-            if 'pd.' in func_code or 'pandas' in func_code:
-                imports_and_constants.append("import pandas as pd")
-            
             # Incluir constantes SQL si existen (buscar patrones como *_SQL)
+            # Los imports ya están dentro de la función, no necesitamos detectarlos
+            constants = []
             for name, value in func_globals.items():
                 if name.endswith('_SQL') and isinstance(value, str):
-                    imports_and_constants.append(f"{name} = {repr(value)}")
+                    constants.append(f"{name} = {repr(value)}")
             
-            # Combinar imports/constantes con el código de la función
-            full_code = '\n'.join(imports_and_constants) + '\n\n' + func_code
+            # Combinar constantes con el código de la función
+            # Los imports ya están dentro de la función
+            if constants:
+                full_code = '\n'.join(constants) + '\n\n' + func_code
+            else:
+                full_code = func_code
+            
+            print(f"[INFO] Serialized post_process_func (imports are inside the function)")
             
             # Comprimir y codificar en base64 para pasarlo como variable de entorno
             compressed = zlib.compress(full_code.encode('utf-8'))

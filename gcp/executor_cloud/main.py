@@ -57,6 +57,7 @@ def main():
                 decompressed = zlib.decompress(decoded).decode('utf-8')
                 
                 # Crear un namespace para ejecutar el código
+                # El código serializado ya incluye todos los imports necesarios dentro de la función
                 namespace = {
                     'con': con,
                     'result_dict': {
@@ -68,6 +69,7 @@ def main():
                 }
                 
                 # Ejecutar el código para definir la función
+                # El código ya incluye los imports (numpy, pandas, sklearn, etc.) dentro de la función
                 exec(decompressed, namespace)
                 
                 # Obtener la función y ejecutarla con el DataFrame como primer parámetro
