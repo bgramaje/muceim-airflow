@@ -30,8 +30,8 @@ def _post_process_mismatch_distribution(df, con, result_dict):
     import matplotlib.pyplot as plt
     import seaborn as sns
     
-    # Get parameters from result_dict
-    save_id = result_dict.get('save_id')
+    # Get parameters from environment variables (set by execute_sql_or_cloud_run)
+    save_id = os.environ.get('REPORT_SAVE_ID')
     
     if df is None or len(df) == 0:
         print("[WARNING] No data to visualize")
@@ -78,7 +78,7 @@ def _post_process_mismatch_distribution(df, con, result_dict):
     )
     
     # Upload to S3
-    s3_key = f"gold/{save_id}/question_2/mismatch_distribution.png"
+    s3_key = f"gold/question2/{save_id}/mismatch_distribution.png"
     s3_client.put_object(
         Bucket=bucket_name,
         Key=s3_key,
@@ -132,18 +132,13 @@ def GOLD_generate_mismatch_distribution(
         FROM mismatch_filtered;
     """
     
-    # Create a closure to pass parameters to post_process function
-    def post_process_func(df, con, result_dict):
-        import os
-        result_dict['save_id'] = os.environ.get('REPORT_SAVE_ID', save_id)
-        return _post_process_mismatch_distribution(df, con, result_dict)
-    
     # Store extra env vars in context
     if 'extra_env_vars' not in context:
         context['extra_env_vars'] = {}
     context['extra_env_vars']['REPORT_SAVE_ID'] = save_id
     
-    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=post_process_func, **context)
+    # Pass the function directly (not a closure) - parameters will be read from env vars inside the function
+    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=_post_process_mismatch_distribution, **context)
     return result.get('s3_path', '')
 
 
@@ -158,8 +153,8 @@ def _post_process_table(df, con, result_dict):
     from botocore.config import Config
     import pandas as pd
     
-    # Get parameters from result_dict
-    save_id = result_dict.get('save_id')
+    # Get parameters from environment variables (set by execute_sql_or_cloud_run)
+    save_id = os.environ.get('REPORT_SAVE_ID')
     
     if df is None or len(df) == 0:
         print("[WARNING] No data to visualize")
@@ -302,7 +297,7 @@ def _post_process_table(df, con, result_dict):
     )
     
     # Upload to S3
-    s3_key = f"gold/{save_id}/question_2/mismatch_table.html"
+    s3_key = f"gold/question2/{save_id}/mismatch_table.html"
     s3_client.put_object(
         Bucket=bucket_name,
         Key=s3_key,
@@ -365,18 +360,13 @@ def GOLD_generate_table(
         ORDER BY mm_ratio;
     """
     
-    # Create a closure to pass parameters to post_process function
-    def post_process_func(df, con, result_dict):
-        import os
-        result_dict['save_id'] = os.environ.get('REPORT_SAVE_ID', save_id)
-        return _post_process_table(df, con, result_dict)
-    
     # Store extra env vars in context
     if 'extra_env_vars' not in context:
         context['extra_env_vars'] = {}
     context['extra_env_vars']['REPORT_SAVE_ID'] = save_id
     
-    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=post_process_func, **context)
+    # Pass the function directly (not a closure) - parameters will be read from env vars inside the function
+    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=_post_process_table, **context)
     return result.get('s3_path', '')
 
 
@@ -392,9 +382,9 @@ def _post_process_mismatch_map(df, con, result_dict):
     from shapely import wkt
     from keplergl import KeplerGl
     
-    # Get parameters from result_dict
-    save_id = result_dict.get('save_id')
-    polygon_wkt = result_dict.get('polygon_wkt')
+    # Get parameters from environment variables (set by execute_sql_or_cloud_run)
+    save_id = os.environ.get('REPORT_SAVE_ID')
+    polygon_wkt = os.environ.get('REPORT_POLYGON_WKT')
     
     if df is None or len(df) == 0:
         print("[WARNING] No data to visualize")
@@ -509,7 +499,7 @@ def _post_process_mismatch_map(df, con, result_dict):
     )
     
     # Upload to S3
-    s3_key = f"gold/{save_id}/question_2/mismatch_map.html"
+    s3_key = f"gold/question2/{save_id}/mismatch_map.html"
     s3_client.put_object(
         Bucket=bucket_name,
         Key=s3_key,
@@ -583,19 +573,13 @@ def GOLD_generate_mismatch_map(
         GROUP BY origin, destination, origin_lon, origin_lat, dest_lon, dest_lat;
     """
     
-    # Create a closure to pass parameters to post_process function
-    def post_process_func(df, con, result_dict):
-        import os
-        result_dict['save_id'] = os.environ.get('REPORT_SAVE_ID', save_id)
-        result_dict['polygon_wkt'] = os.environ.get('REPORT_POLYGON_WKT', polygon_wkt)
-        return _post_process_mismatch_map(df, con, result_dict)
-    
     # Store extra env vars in context
     if 'extra_env_vars' not in context:
         context['extra_env_vars'] = {}
     context['extra_env_vars']['REPORT_SAVE_ID'] = save_id
     context['extra_env_vars']['REPORT_POLYGON_WKT'] = polygon_wkt
     
-    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=post_process_func, **context)
+    # Pass the function directly (not a closure) - parameters will be read from env vars inside the function
+    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=_post_process_mismatch_map, **context)
     return result.get('s3_path', '')
 

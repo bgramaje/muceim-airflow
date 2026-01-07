@@ -12,12 +12,13 @@ from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.sdk import task
 from airflow import DAG
 from airflow.providers.standard.operators.empty import EmptyOperator
-import hashlib
+import uuid
 
 from gold.tasks import (
     GOLD_generate_typical_day_map,
     GOLD_generate_top_origins,
     GOLD_generate_hourly_distribution,
+    GOLD_verify_s3_connection,
 )
 
 
@@ -32,15 +33,15 @@ def generate_directory(start_date: str = None, end_date: str = None, polygon_wkt
     - polygon_wkt: WKT polygon defining the area of interest
     
     Returns:
-    - str: Short unique identifier for the report directory
+    - str: UUID for the report directory
     """
-    combined = f"{start_date}_{end_date}_{polygon_wkt}"
-    short_id = hashlib.md5(combined.encode()).hexdigest()[:4]
+    # Generate UUID for this report
+    report_uuid = str(uuid.uuid4())
 
     content = f"Start date: {start_date}\nEnd date: {end_date}\n\n{polygon_wkt}"
     bucket_name = Variable.get('RUSTFS_BUCKET', default_var='mitma')
     s3 = S3Hook(aws_conn_id="rustfs_s3_conn")
-    s3_key = f"gold/{short_id}/question_1/info.txt"
+    s3_key = f"gold/question1/{report_uuid}/info.txt"
     s3.load_string(
         string_data=content,
         key=s3_key,
@@ -48,7 +49,7 @@ def generate_directory(start_date: str = None, end_date: str = None, polygon_wkt
         replace=True
     )
     print(f"[SUCCESS] Uploaded to s3://{bucket_name}/{s3_key}")
-    return short_id
+    return report_uuid
 
 
 with DAG(
@@ -79,6 +80,9 @@ with DAG(
         polygon_wkt="{{ params.polygon }}"
     )
 
+    # Verify S3 connection before generating reports
+    verify_s3 = GOLD_verify_s3_connection.override(task_id="verify_s3_connection")()
+
     # Question 1: Typical day reports (sequential execution)
     typ_day_map = GOLD_generate_typical_day_map.override(task_id="typical_day_map")(
         save_id=save_id,
@@ -99,6 +103,6 @@ with DAG(
         polygon_wkt="{{ params.polygon }}"
     )
 
-    # Sequential execution: map -> top_origins -> hourly_distribution
-    start >> save_id >> typ_day_map >> typ_day_top >> typ_day_hourly >> done
+    # Sequential execution: verify S3 -> map -> top_origins -> hourly_distribution
+    start >> save_id >> verify_s3 >> typ_day_map >> typ_day_top >> typ_day_hourly >> done
 

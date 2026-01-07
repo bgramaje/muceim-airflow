@@ -30,9 +30,9 @@ def _post_process_typical_day_map(df, con, result_dict):
     from shapely import wkt
     from keplergl import KeplerGl
     
-    # Get parameters from result_dict
-    save_id = result_dict.get('save_id')
-    polygon_wkt = result_dict.get('polygon_wkt')
+    # Get parameters from environment variables (set by execute_sql_or_cloud_run)
+    save_id = os.environ.get('REPORT_SAVE_ID')
+    polygon_wkt = os.environ.get('REPORT_POLYGON_WKT')
     
     if df is None or len(df) == 0:
         print("[WARNING] No data to visualize")
@@ -124,7 +124,7 @@ def _post_process_typical_day_map(df, con, result_dict):
     )
     
     # Upload to S3
-    s3_key = f"gold/{save_id}/question_1/typical_day_map.html"
+    s3_key = f"gold/question1/{save_id}/typical_day_map.html"
     s3_client.put_object(
         Bucket=bucket_name,
         Key=s3_key,
@@ -195,21 +195,14 @@ def GOLD_generate_typical_day_map(
         GROUP BY origin, destination, origin_lon, origin_lat, dest_lon, dest_lat;
     """
     
-    # Create a closure to pass parameters to post_process function
-    # Note: We'll pass save_id and polygon_wkt via environment variables
-    def post_process_func(df, con, result_dict):
-        import os
-        result_dict['save_id'] = os.environ.get('REPORT_SAVE_ID', save_id)
-        result_dict['polygon_wkt'] = os.environ.get('REPORT_POLYGON_WKT', polygon_wkt)
-        return _post_process_typical_day_map(df, con, result_dict)
-    
     # Store extra env vars in context for exec_gcp_ducklake_executor
     if 'extra_env_vars' not in context:
         context['extra_env_vars'] = {}
     context['extra_env_vars']['REPORT_SAVE_ID'] = save_id
     context['extra_env_vars']['REPORT_POLYGON_WKT'] = polygon_wkt
     
-    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=post_process_func, **context)
+    # Pass the function directly (not a closure) - parameters will be read from env vars inside the function
+    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=_post_process_typical_day_map, **context)
     return result.get('s3_path', '')
 
 
@@ -226,8 +219,8 @@ def _post_process_top_origins(df, con, result_dict):
     matplotlib.use('Agg')  # Use non-interactive backend
     import matplotlib.pyplot as plt
     
-    # Get parameters from result_dict
-    save_id = result_dict.get('save_id')
+    # Get parameters from environment variables (set by execute_sql_or_cloud_run)
+    save_id = os.environ.get('REPORT_SAVE_ID')
     
     if df is None or len(df) == 0:
         print("[WARNING] No data to visualize")
@@ -267,7 +260,7 @@ def _post_process_top_origins(df, con, result_dict):
     )
     
     # Upload to S3
-    s3_key = f"gold/{save_id}/question_1/top_origins.png"
+    s3_key = f"gold/question1/{save_id}/top_origins.png"
     s3_client.put_object(
         Bucket=bucket_name,
         Key=s3_key,
@@ -325,18 +318,13 @@ def GOLD_generate_top_origins(
         LIMIT 10;
     """
     
-    # Create a closure to pass parameters to post_process function
-    def post_process_func(df, con, result_dict):
-        import os
-        result_dict['save_id'] = os.environ.get('REPORT_SAVE_ID', save_id)
-        return _post_process_top_origins(df, con, result_dict)
-    
     # Store extra env vars in context
     if 'extra_env_vars' not in context:
         context['extra_env_vars'] = {}
     context['extra_env_vars']['REPORT_SAVE_ID'] = save_id
     
-    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=post_process_func, **context)
+    # Pass the function directly (not a closure) - parameters will be read from env vars inside the function
+    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=_post_process_top_origins, **context)
     return result.get('s3_path', '')
 
 
@@ -351,8 +339,8 @@ def _post_process_hourly_distribution(df, con, result_dict):
     import pandas as pd
     import plotly.graph_objects as go
     
-    # Get parameters from result_dict
-    save_id = result_dict.get('save_id')
+    # Get parameters from environment variables (set by execute_sql_or_cloud_run)
+    save_id = os.environ.get('REPORT_SAVE_ID')
     
     if df is None or len(df) == 0:
         print("[WARNING] No data to visualize")
@@ -442,7 +430,7 @@ def _post_process_hourly_distribution(df, con, result_dict):
     )
     
     # Upload to S3
-    s3_key = f"gold/{save_id}/question_1/hourly_distribution.html"
+    s3_key = f"gold/question1/{save_id}/hourly_distribution.html"
     s3_client.put_object(
         Bucket=bucket_name,
         Key=s3_key,
@@ -501,17 +489,12 @@ def GOLD_generate_hourly_distribution(
         ORDER BY municipality, hour;
     """
     
-    # Create a closure to pass parameters to post_process function
-    def post_process_func(df, con, result_dict):
-        import os
-        result_dict['save_id'] = os.environ.get('REPORT_SAVE_ID', save_id)
-        return _post_process_hourly_distribution(df, con, result_dict)
-    
     # Store extra env vars in context
     if 'extra_env_vars' not in context:
         context['extra_env_vars'] = {}
     context['extra_env_vars']['REPORT_SAVE_ID'] = save_id
     
-    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=post_process_func, **context)
+    # Pass the function directly (not a closure) - parameters will be read from env vars inside the function
+    result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=_post_process_hourly_distribution, **context)
     return result.get('s3_path', '')
 

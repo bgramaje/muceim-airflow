@@ -19,6 +19,7 @@ from .question_3.reports import (
     GOLD_generate_in_out_distribution,
     GOLD_generate_functional_type_map
 )
+from .verify_s3_connection import GOLD_verify_s3_connection
 
 __all__ = [
     # Question 1 - Typical Day
@@ -35,5 +36,7 @@ __all__ = [
     "GOLD_functional_type",
     "GOLD_generate_in_out_distribution",
     "GOLD_generate_functional_type_map",
+    # Verification
+    "GOLD_verify_s3_connection",
 ]
 

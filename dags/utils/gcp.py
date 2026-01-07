@@ -382,7 +382,12 @@ def exec_gcp_ducklake_executor(
         
         # Obtener el código fuente de la función
         try:
+            import textwrap
             func_code = inspect.getsource(post_process_func)
+            
+            # Eliminar la indentación común del código (textwrap.dedent)
+            # Esto asegura que el código se ejecute correctamente sin problemas de indentación
+            func_code = textwrap.dedent(func_code)
             
             # Intentar obtener las variables globales que la función necesita
             # (como constantes SQL definidas en el módulo)
