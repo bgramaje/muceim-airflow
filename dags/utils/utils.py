@@ -287,7 +287,22 @@ class DuckLakeConnectionManager:
         
         # IMPORTANT: Set custom_user_agent BEFORE loading httpfs extension
         # Once httpfs is loaded, this setting cannot be changed
-        con.execute(f"SET custom_user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64)';")
+        # Since this is a new connection (duckdb.connect()), httpfs should not be loaded yet
+        # But we catch the error just in case there's some shared state
+        try:
+            con.execute(f"SET custom_user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64)';")
+        except Exception as e:
+            # If it fails, it might be because:
+            # 1. httpfs is somehow already loaded (unlikely for new connection)
+            # 2. There's some shared DuckDB state
+            # In this case, we assume custom_user_agent was already set and continue
+            # This should not happen for a fresh connection, but we handle it gracefully
+            error_msg = str(e).lower()
+            if 'custom_user_agent' in error_msg and 'cannot change' in error_msg:
+                print(f"Warning: custom_user_agent cannot be changed (likely already set or httpfs loaded). Continuing...")
+            else:
+                # Re-raise if it's a different error
+                raise
         
         # Apply other configurable DuckDB parameters early (before extensions)
         con.execute(f"SET memory_limit='{duckdb_config['memory_limit']}';")
