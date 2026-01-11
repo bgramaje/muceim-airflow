@@ -324,8 +324,8 @@ class DuckLakeConnectionManager:
         con.execute(f"SET max_temp_directory_size='{duckdb_config['max_temp_directory_size']}';")
         con.execute(f"SET temp_directory='{duckdb_config['temp_directory']}';")
         con.execute(f"SET enable_object_cache={str(duckdb_config['enable_object_cache']).lower()};")
-
-        con.execute("SET force_download=false;")
+        con.execute(f"SET custom_user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64)';")
+        con.execute(f"SET force_download=false;")
 
         databases = con.execute("SELECT database_name FROM duckdb_databases();").fetchdf()
         if 'ducklake' not in databases['database_name'].values:
