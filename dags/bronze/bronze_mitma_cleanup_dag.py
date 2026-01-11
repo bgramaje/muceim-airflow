@@ -16,8 +16,9 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
 from airflow import DAG
-from airflow.models import Param, Variable
-from airflow.decorators import task, task_group
+from airflow.models import Param
+from airflow.sdk import Variable
+from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
 
 
@@ -31,7 +32,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     from utils.utils import get_ducklake_connection
     
     # Get bucket name from Airflow Variable
-    rustfs_bucket = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+    rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
     
     # Get params from context
     params = context.get('params', {})
@@ -173,7 +174,7 @@ def delete_rustfs_files(
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
     
     # Get bucket name from Airflow Variable or file_info
-    rustfs_bucket = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+    rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
     
     if file_info is None:
         file_info = {}
@@ -272,30 +273,9 @@ def list_bronze_tables(**context) -> Dict[str, Any]:
     if zone_type != 'all':
         table_names = [t for t in table_names if t.endswith(f'_{zone_type}')]
     
-    # Get row counts for each table
-    tables = []
-    for table_name in table_names:
-        try:
-            count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-            tables.append({
-                'table_name': table_name,
-                'row_count': count
-            })
-        except Exception as e:
-            print(f"[CLEANUP] Error getting count for {table_name}: {e}")
-            tables.append({
-                'table_name': table_name,
-                'row_count': 0
-            })
-    
-    total_rows = sum(t['row_count'] for t in tables)
-    
-    print(f"[CLEANUP] Found {len(tables)} tables with {total_rows:,} total rows")
-    
     return {
-        'tables': tables,
-        'total_tables': len(tables),
-        'total_rows': total_rows
+        'tables': table_names,
+        'total_tables': len(table_names)
     }
 
 
@@ -305,9 +285,9 @@ def truncate_bronze_tables(
     **context
 ) -> Dict[str, Any]:
     """
-    Truncates Bronze MITMA tables using a single SQL statement executed via Cloud Run.
+    Drops Bronze MITMA tables using a single SQL statement executed via Cloud Run.
     
-    WARNING: This permanently deletes all data in the tables!
+    WARNING: This permanently deletes the tables completely (structure and data)!
     """
     from utils.gcp import execute_sql_or_cloud_run
     
@@ -315,42 +295,40 @@ def truncate_bronze_tables(
         table_info = {}
     
     tables = table_info.get('tables', [])
-    total_rows = table_info.get('total_rows', 0)
     
     if not tables:
         return {
             'status': 'skipped',
             'reason': 'no_tables',
-            'truncated': 0
+            'dropped': 0
         }
     
-    # Build single SQL statement with all DELETE statements
-    table_names = [t['table_name'] for t in tables]
-    delete_statements = [f"DELETE FROM {table_name};" for table_name in table_names]
-    sql_query = "\n".join(delete_statements)
+    # Build single SQL statement with all DROP TABLE statements
+    # list_bronze_tables returns a list of table name strings
+    table_names = tables if isinstance(tables, list) else []
+    drop_statements = [f"DROP TABLE IF EXISTS {table_name};" for table_name in table_names]
+    sql_query = "\n".join(drop_statements)
     
-    print(f"[CLEANUP] ⚠️  TRUNCATING {len(tables)} tables ({total_rows:,} rows)")
+    print(f"[CLEANUP] ⚠️  DROPPING {len(table_names)} tables (complete deletion including structure)")
     
     try:
-        # Execute all DELETE statements in a single call via Cloud Run
+        # Execute all DROP TABLE statements in a single call via Cloud Run
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         
-        print(f"[CLEANUP] ✅ Truncated {len(tables)} tables")
+        print(f"[CLEANUP] ✅ Dropped {len(table_names)} tables")
         
         return {
             'status': 'success',
-            'truncated': len(tables),
-            'deleted_rows': total_rows,
+            'dropped': len(table_names),
             'execution_time_seconds': result.get('execution_time_seconds', 0),
             'execution_name': result.get('execution_name', 'unknown')
         }
         
     except Exception as e:
-        print(f"[CLEANUP] ❌ Error truncating tables: {e}")
+        print(f"[CLEANUP] ❌ Error dropping tables: {e}")
         return {
             'status': 'error',
-            'truncated': 0,
-            'deleted_rows': 0,
+            'dropped': 0,
             'error': str(e)
         }
 
@@ -374,7 +352,7 @@ with DAG(
         "cleanup_tables": Param(
             type="boolean",
             default=False,
-            description="⚠️ Truncate Bronze tables (DANGER: deletes all data!)"
+            description="⚠️ Drop Bronze tables (DANGER: deletes tables completely including structure!)"
         ),
         "dataset": Param(
             type="string",
@@ -389,7 +367,7 @@ with DAG(
             description="Which zone type to clean"
         ),
     },
-    description="Cleanup DAG for MITMA Bronze layer - RustFS files and tables",
+    description="Cleanup DAG for MITMA Bronze layer - RustFS files and tables (DROP TABLE removes tables completely)",
     default_args={
         "retries": 1,
         "retry_delay": timedelta(seconds=30),

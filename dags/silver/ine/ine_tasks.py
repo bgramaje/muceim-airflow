@@ -7,7 +7,7 @@ import sys
 import os
 from types import SimpleNamespace
 
-from airflow.decorators import task_group
+from airflow.sdk import task_group
 
 # Add parent directory to path to import utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))

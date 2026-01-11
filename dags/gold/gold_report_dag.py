@@ -7,7 +7,8 @@ and are uploaded to S3.
 """
 
 from datetime import datetime, timedelta
-from airflow.models import Param, Variable
+from airflow.models import Param
+from airflow.sdk import Variable
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.sdk import task
 from airflow import DAG
@@ -47,7 +48,7 @@ def generate_directory(start_date: str = None, end_date: str = None, polygon_wkt
     short_id = hashlib.md5(combined.encode()).hexdigest()[:4]
 
     content = f"Start date: {start_date}\nEnd date: {end_date}\n\n{polygon_wkt}"
-    bucket_name = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+    bucket_name = Variable.get('RUSTFS_BUCKET', default='mitma')
     s3 = S3Hook(aws_conn_id="rustfs_s3_conn")
     s3_key = f"gold/{short_id}/info.txt"
     s3.load_string(

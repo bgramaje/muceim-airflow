@@ -19,10 +19,10 @@ def PRE_s3_bucket():
     
     try:
         from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-        from airflow.models import Variable
+        from airflow.sdk import Variable
         
         # Get bucket name from Airflow Variables
-        bucket_name = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+        bucket_name = Variable.get('RUSTFS_BUCKET', default='mitma')
         
         # Use S3Hook to connect to RustFS
         s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')

@@ -34,7 +34,7 @@ from typing import List, Dict, Any
 from airflow import DAG
 from airflow.datasets import Dataset
 from airflow.models import Param
-from airflow.decorators import task, task_group
+from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
 
 from misc.infra import tg_infra

@@ -53,7 +53,7 @@ gcloud projects add-iam-policy-binding PROJECT_ID \
 
 from typing import Dict
 import time
-from airflow.models import Variable  # type: ignore
+from airflow.sdk import Variable  # type: ignore
 from google.cloud import run_v2  # type: ignore
 
 
@@ -188,9 +188,9 @@ def _get_cloud_run_connection():
     try:
         from airflow.providers.google.cloud.hooks.cloud_run import CloudRunHook  # type: ignore
         
-        region = Variable.get('GCP_CLOUD_RUN_REGION', default_var=None)
-        project_id = Variable.get('GCP_PROJECT_ID', default_var=None)
-        gcp_conn_id = Variable.get('GCP_CONNECTION_ID', default_var='google_cloud_default')
+        region = Variable.get('GCP_CLOUD_RUN_REGION', default=None)
+        project_id = Variable.get('GCP_PROJECT_ID', default=None)
+        gcp_conn_id = Variable.get('GCP_CONNECTION_ID', default='google_cloud_default')
         
         if region and project_id:
             try:
@@ -244,7 +244,7 @@ def exec_gcp_ducklake_ingestor(
         raise ValueError("Cloud Run connection not available. Check Airflow Variables: GCP_CLOUD_RUN_REGION, GCP_PROJECT_ID")
     
     credentials, region, project_id = conn_info
-    job_name = Variable.get('GCP_CLOUD_RUN_JOB_NAME', default_var=None)
+    job_name = Variable.get('GCP_CLOUD_RUN_JOB_NAME', default=None)
     
     if not job_name:
         raise ValueError("GCP_CLOUD_RUN_JOB_NAME Airflow Variable must be set")
@@ -338,19 +338,19 @@ def exec_gcp_ducklake_executor(
         raise ValueError("Cloud Run connection not available. Check Airflow Variables: GCP_CLOUD_RUN_REGION, GCP_PROJECT_ID")
     
     credentials, region, project_id = conn_info
-    job_name = Variable.get('GCP_CLOUD_RUN_EXECUTOR_JOB_NAME', default_var='ducklake-executor')
+    job_name = Variable.get('GCP_CLOUD_RUN_EXECUTOR_JOB_NAME', default='ducklake-executor')
     
     # Get S3 credentials from Airflow connection to pass to Cloud Run
     try:
-        from airflow.sdk.bases.hook import BaseHook
-        s3_conn = BaseHook.get_connection('rustfs_s3_conn')
+        from airflow.sdk import Connection
+        s3_conn = Connection.get('rustfs_s3_conn')
         s3_extra = s3_conn.extra_dejson
         endpoint_url = s3_extra.get('endpoint_url', 'http://rustfs:9000')
         s3_endpoint = endpoint_url.replace('http://', '').replace('https://', '')
         rustfs_user = s3_extra.get('aws_access_key_id', 'admin')
         rustfs_password = s3_extra.get('aws_secret_access_key', 'muceim-duckduck.2025!')
         rustfs_ssl = 'true' if 'https' in endpoint_url else 'false'
-        rustfs_bucket = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+        rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
     except Exception as e:
         print(f"[WARNING] Could not get S3 credentials from Airflow connection: {str(e)}")
         # Use defaults if connection not available
@@ -358,7 +358,7 @@ def exec_gcp_ducklake_executor(
         rustfs_user = "admin"
         rustfs_password = "muceim-duckduck.2025!"
         rustfs_ssl = "false"
-        rustfs_bucket = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+        rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
     
     env_vars_list = [
         {'name': 'SQL_QUERY', 'value': sql_query},
@@ -605,7 +605,7 @@ def exec_gcp_ducklake_ingestor_from_http(
     DuckDB con httpfs puede leer tanto S3 como HTTP directamente.
     
     Parameters:
-    - table_name: Nombre de la tabla (sin prefijo 'bronze_')
+    - table_name: Nombre completo de la tabla (incluyendo prefijo 'bronze_' si aplica, ej: 'bronze_mitma_od_municipios')
     - url: URL HTTP del archivo CSV
     - original_url: URL original para logging/auditing (opcional, puede ser la misma que url)
     - **context: Contexto de Airflow (se pasa automáticamente)
@@ -622,7 +622,7 @@ def exec_gcp_ducklake_ingestor_from_http(
         raise ValueError("Cloud Run connection not available. Check Airflow Variables: GCP_CLOUD_RUN_REGION, GCP_PROJECT_ID")
     
     credentials, region, project_id = conn_info
-    job_name = Variable.get('GCP_CLOUD_RUN_JOB_NAME', default_var=None)
+    job_name = Variable.get('GCP_CLOUD_RUN_JOB_NAME', default=None)
     
     if not job_name:
         raise ValueError("GCP_CLOUD_RUN_JOB_NAME Airflow Variable must be set")

@@ -49,7 +49,7 @@ def _get_csv_source_query(url, original_url=None):
             '{url}',
             filename = true,
             header = true,
-            all_varchar = true,
+            all_varchar = true
         )
     """
 
@@ -71,7 +71,7 @@ def main():
 
         # DuckDB configuration optimized for 32 GiB RAM and 8 CPUs
         config = {
-            'memory_limit': '28GB',
+            'memory_limit': '30GB',
             'threads': 8,
             'worker_threads': 8,
             'max_temp_directory_size': '200GiB'

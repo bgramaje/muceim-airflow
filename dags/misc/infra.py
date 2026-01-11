@@ -5,7 +5,7 @@ Orchestrates connection verification and S3 bucket setup.
 
 from types import SimpleNamespace
 
-from airflow.decorators import task_group
+from airflow.sdk import task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
 
 from misc.tasks.verify_connections import PRE_verify_connections

@@ -27,7 +27,7 @@ from typing import List, Dict, Any
 from airflow import DAG
 from airflow.datasets import Dataset
 from airflow.models import Param
-from airflow.decorators import task, task_group
+from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
 
 from misc.infra import tg_infra
@@ -163,17 +163,20 @@ def process_batch_http(
             'processed': 0
         }
     
-    table_name = f'mitma_{dataset}_{zone_type}'
+    # Use full table name with bronze_ prefix (as created by create_partitioned_table_from_csv)
+    table_name = f'bronze_mitma_{dataset}_{zone_type}'
     processed = 0
     errors = []
     
     print(f"[TASK] Processing batch {batch_index} in Cloud Run: {len(urls)} HTTP URLs")
     print(f"[TASK] All processing happens in Cloud Run - no local downloads")
+    print(f"[TASK] Target table: {table_name}")
     
     for url in urls:
         try:
             # Process directly from HTTP URL in Cloud Run
             # merge_csv_or_cloud_run will detect HTTP URLs and use exec_gcp_ducklake_ingestor_from_http
+            # Note: We pass the full table name with bronze_ prefix
             merge_csv_or_cloud_run(
                 table_name=table_name,
                 url=url,

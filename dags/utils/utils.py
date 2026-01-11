@@ -219,20 +219,19 @@ class DuckLakeConnectionManager:
         
         # Try to use Airflow connections first, fallback to environment variables
         try:
-            from airflow.sdk.bases.hook import BaseHook # type: ignore
-            from airflow.models import Variable # type: ignore
+            from airflow.sdk import Connection, Variable # type: ignore
             
             print("🔗 Usando conexiones de Airflow...")
             
             # Obtener configuración de PostgreSQL desde Airflow
-            pg_conn = BaseHook.get_connection('postgres_datos_externos')
+            pg_conn = Connection.get('postgres_datos_externos')
             POSTGRES_HOST = pg_conn.host
             POSTGRES_PORT = pg_conn.port or 5432
             POSTGRES_DB = pg_conn.schema
             POSTGRES_USER = pg_conn.login
             POSTGRES_PASSWORD = pg_conn.password
             
-            s3_conn = BaseHook.get_connection('rustfs_s3_conn')
+            s3_conn = Connection.get('rustfs_s3_conn')
             s3_extra = s3_conn.extra_dejson
             endpoint_url = s3_extra.get('endpoint_url', 'http://rustfs:9000')
             S3_ENDPOINT = endpoint_url.replace('http://', '').replace('https://', '')
@@ -243,7 +242,7 @@ class DuckLakeConnectionManager:
             RUSTFS_SSL = 'true' if 'https' in endpoint_url else 'false'
             
             # Obtener bucket desde Variables de Airflow
-            RUSTFS_BUCKET = Variable.get('RUSTFS_BUCKET', default_var='mitma')
+            RUSTFS_BUCKET = Variable.get('RUSTFS_BUCKET', default='mitma')
             
         except (ImportError, Exception):
             # Fallback to environment variables (Cloud Run scenario)
