@@ -140,10 +140,11 @@ class DuckLakeConnectionManager:
         if duckdb_config is not None:
             duckdb_config = {**_get_default_duckdb_config(), **duckdb_config}
 
-        print(
-            f"   DuckDB Config: RAM={duckdb_config['memory_limit']}, Threads={duckdb_config['threads']}")
-
-        con = duckdb.connect()
+        USER_AGENT_STR = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        duckdb_config['custom_user_agent'] = USER_AGENT_STR
+        
+        print(f"   DuckDB Config: RAM={duckdb_config['memory_limit']}, UA=Windows/Chrome")
+        con = duckdb.connect(config=duckdb_config)
 
         # Aplicamos límites de recursos antes de cargar nada pesado
         con.execute(f"SET memory_limit='{duckdb_config['memory_limit']}';")
@@ -165,12 +166,6 @@ class DuckLakeConnectionManager:
         except Exception as e:
             print(f"⚠️ DuckLake nightly failed ({e}), trying standard...")
             load_extension(con, 'ducklake')
-
-        USER_AGENT_STR = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        # User Agent para peticiones HTTP normales (https://...)
-        con.execute(f"SET custom_user_agent='{USER_AGENT_STR}';")
-        # User Agent específico para tráfico S3 (IMPORTANTE para DuckLake/MinIO)
-        con.execute(f"SET s3_user_agent='{USER_AGENT_STR}';")
 
         secret_query = f"""
             CREATE OR REPLACE SECRET rustfs_secret (
