@@ -112,7 +112,7 @@ def filter_urls_by_ingested_dates(
     try:
         ingested_dates_sql = f"""
             SELECT DISTINCT 
-                strftime(fecha, '%Y%m%d') AS fecha_str
+                strftime(fecha::TIMESTAMP, '%Y%m%d') AS fecha_str
             FROM {table_name}
             WHERE fecha IS NOT NULL
         """
@@ -180,6 +180,8 @@ def create_partitioned_table(
     # SQL para crear la tabla con fecha casteada a TIMESTAMP y particionado
     # La fecha viene como VARCHAR en formato YYYYMMDD, la casteamos a TIMESTAMP
     create_table_sql = f"""
+        SET http_keep_alive=false;
+        SET force_download=true;
         CREATE TABLE IF NOT EXISTS {table_name} AS
         SELECT 
             * EXCLUDE (fecha, filename),
@@ -191,7 +193,10 @@ def create_partitioned_table(
             '{url}',
             filename = true,
             header = true,
-            all_varchar = true
+            auto_detect = false,
+            all_varchar = true,
+            compression='gzip',
+            columns={{'fecha': 'VARCHAR', 'periodo': 'VARCHAR', 'origen': 'VARCHAR', 'destino': 'VARCHAR', 'distancia': 'VARCHAR', 'actividad_origen': 'VARCHAR', 'actividad_destino': 'VARCHAR', 'estudio_origen_posible': 'VARCHAR', 'estudio_destino_posible': 'VARCHAR', 'residencia': 'VARCHAR', 'renta': 'VARCHAR', 'edad': 'VARCHAR', 'sexo': 'VARCHAR', 'viajes': 'VARCHAR', 'viajes_km': 'VARCHAR'}}
         )
         LIMIT 0;
     """
@@ -258,11 +263,11 @@ def get_ingested_dates(
     # Obtener fechas únicas en formato YYYYMMDD
     sql_query = f"""
         SELECT DISTINCT 
-            strftime(fecha, '%Y%m%d') AS fecha_str
+            strftime(fecha::TIMESTAMP, '%Y%m%d') AS fecha_str
         FROM {table_name}
         WHERE fecha IS NOT NULL
-            AND fecha >= strptime('{start_date}', '%Y-%m-%d')
-            AND fecha <= strptime('{end_date}', '%Y-%m-%d')
+            AND fecha::TIMESTAMP >= strptime('{start_date}', '%Y-%m-%d')
+            AND fecha::TIMESTAMP <= strptime('{end_date}', '%Y-%m-%d')
         ORDER BY fecha_str
     """
     
@@ -350,6 +355,7 @@ def process_batch_insert(
             # Casteamos fecha VARCHAR a TIMESTAMP y agregamos metadatos
             insert_sql = f"""
                 SET http_keep_alive=false;
+                SET force_download=true;
                 INSERT INTO {table_name}
                 SELECT 
                     * EXCLUDE (fecha, filename),
@@ -363,7 +369,8 @@ def process_batch_insert(
                     header = true,
                     auto_detect = false,
                     all_varchar = true,
-                    compression='gzip'
+                    compression='gzip',
+                    columns={{'fecha': 'VARCHAR', 'periodo': 'VARCHAR', 'origen': 'VARCHAR', 'destino': 'VARCHAR', 'distancia': 'VARCHAR', 'actividad_origen': 'VARCHAR', 'actividad_destino': 'VARCHAR', 'estudio_origen_posible': 'VARCHAR', 'estudio_destino_posible': 'VARCHAR', 'residencia': 'VARCHAR', 'renta': 'VARCHAR', 'edad': 'VARCHAR', 'sexo': 'VARCHAR', 'viajes': 'VARCHAR', 'viajes_km': 'VARCHAR'}}
                 )
             """
             

@@ -2,7 +2,7 @@ import os
 import sys
 import base64
 import zlib
-from utils import get_ducklake_connection
+from utils import get_ducklake_connection, close_ducklake_connection
 
 
 def main():
@@ -94,7 +94,6 @@ def main():
                 traceback.print_exc()
                 # No fallamos el job si el post-procesamiento falla, solo logueamos
 
-        con.close()
         print("[CLOUD_RUN_JOB] Job completed successfully")
         sys.exit(0)
 
@@ -104,6 +103,8 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        close_ducklake_connection()
 
 
 if __name__ == "__main__":
