@@ -98,7 +98,6 @@ class DuckLakeConnectionManager:
         """
         import os
 
-        # --- 1. Obtención de Credenciales (Igual que antes) ---
         try:
             from airflow.sdk import Connection, Variable  # type: ignore
             print("🔗 Usando conexiones de Airflow...")
@@ -123,7 +122,7 @@ class DuckLakeConnectionManager:
 
         except (ImportError, Exception):
             print("🔗 Usando variables de entorno (Cloud Run)...")
-            # ... (Lógica de fallback igual que antes) ...
+
             POSTGRES_HOST = os.environ.get("POSTGRES_HOST")
             POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
             POSTGRES_DB = os.environ.get("POSTGRES_DB")
@@ -136,17 +135,41 @@ class DuckLakeConnectionManager:
             RUSTFS_SSL = os.environ.get("RUSTFS_SSL", "false")
 
         # --- 2. Configuración Inicial DuckDB ---
-        duckdb_config = _get_default_duckdb_config()
-        if duckdb_config is not None:
-            duckdb_config = {**_get_default_duckdb_config(), **duckdb_config}
+        default_config = _get_default_duckdb_config()
+        if duckdb_config:
+            duckdb_config = {**default_config, **duckdb_config}
+        else:
+            duckdb_config = default_config
 
         USER_AGENT_STR = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         duckdb_config['custom_user_agent'] = USER_AGENT_STR
-        
-        print(f"   DuckDB Config: RAM={duckdb_config['memory_limit']}, UA=Windows/Chrome")
+
+        print(
+            f"DuckDB Config: RAM={duckdb_config['memory_limit']}, UA=Windows/Chrome")
+
         con = duckdb.connect(config=duckdb_config)
 
-        # Aplicamos límites de recursos antes de cargar nada pesado
+        con.execute(f"""
+            CREATE OR REPLACE SECRET rustfs_secret (
+                TYPE S3,
+                KEY_ID '{RUSTFS_USER}',
+                SECRET '{RUSTFS_PASSWORD}',
+                ENDPOINT '{S3_ENDPOINT}',
+                REGION 'eu-west-1', -- Requerido sintácticamente aunque usemos MinIO
+                URL_STYLE 'path',
+                USE_SSL {RUSTFS_SSL}
+            );
+        """)
+
+        con.execute(f"""
+            CREATE OR REPLACE SECRET http (
+                TYPE HTTP,
+                EXTRA_HTTP_HEADERS MAP {
+                    'User-Agent': '{USER_AGENT_STR}'
+                }
+            );
+        """)
+
         con.execute(f"SET memory_limit='{duckdb_config['memory_limit']}';")
         con.execute(f"SET threads={duckdb_config['threads']};")
         con.execute(f"SET worker_threads={duckdb_config['worker_threads']};")
@@ -166,19 +189,6 @@ class DuckLakeConnectionManager:
         except Exception as e:
             print(f"⚠️ DuckLake nightly failed ({e}), trying standard...")
             load_extension(con, 'ducklake')
-
-        secret_query = f"""
-            CREATE OR REPLACE SECRET rustfs_secret (
-                TYPE S3,
-                KEY_ID '{RUSTFS_USER}',
-                SECRET '{RUSTFS_PASSWORD}',
-                ENDPOINT '{S3_ENDPOINT}',
-                REGION 'eu-west-1', -- Requerido sintácticamente aunque usemos MinIO
-                URL_STYLE 'path',
-                USE_SSL {RUSTFS_SSL}
-            );
-        """
-        con.execute(secret_query)
 
         # --- 6. Conexión a DuckLake ---
         databases = con.execute(
