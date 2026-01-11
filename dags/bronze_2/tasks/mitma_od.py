@@ -86,32 +86,42 @@ def filter_urls_by_ingested_dates(
     Filtra URLs excluyendo las fechas que ya están ingestadas en la tabla.
     Usa SELECT DISTINCT sobre la columna fecha (timestamp) para obtener fechas ya procesadas.
     """
-    con = get_ducklake_connection()
+    # Usar una conexión nueva para evitar conflictos de configuración
+    # Verificar si la tabla existe usando SQL
+    check_table_sql = f"""
+        SELECT COUNT(*) as cnt
+        FROM information_schema.tables 
+        WHERE table_name = '{table_name}'
+    """
     
-    # Verificar si la tabla existe
     try:
-        result = con.execute(f"""
-            SELECT COUNT(*) FROM information_schema.tables 
-            WHERE table_name = '{table_name}'
-        """).fetchone()
-        table_exists = result[0] > 0
-    except:
+        # Usar force_new=True para evitar problemas con configuración compartida
+        con = get_ducklake_connection(force_new=True)
+        result = con.execute(check_table_sql).fetchone()
+        table_exists = result[0] > 0 if result else False
+        con.close()
+    except Exception as e:
+        print(f"[FILTER] Error checking if table exists: {e}, assuming it doesn't exist")
         table_exists = False
     
     if not table_exists:
         print(f"[FILTER] Table {table_name} does not exist, returning all URLs")
         return urls
     
-    # Obtener fechas ya ingestadas (formato YYYYMMDD desde timestamp)
+    # Obtener fechas ya ingestadas (formato YYYYMMDD desde timestamp) usando SQL directo
     try:
-        ingested_dates_df = con.execute(f"""
+        ingested_dates_sql = f"""
             SELECT DISTINCT 
                 strftime(fecha, '%Y%m%d') AS fecha_str
             FROM {table_name}
             WHERE fecha IS NOT NULL
-        """).fetchdf()
+        """
         
+        # Usar force_new=True para evitar problemas con configuración compartida
+        con = get_ducklake_connection(force_new=True)
+        ingested_dates_df = con.execute(ingested_dates_sql).fetchdf()
         ingested_dates = set(ingested_dates_df['fecha_str'].astype(str).tolist())
+        con.close()
         print(f"[FILTER] Found {len(ingested_dates)} already ingested dates")
     except Exception as e:
         print(f"[FILTER] Error getting ingested dates: {e}, returning all URLs")
@@ -340,7 +350,6 @@ def process_batch_insert(
             # Casteamos fecha VARCHAR a TIMESTAMP y agregamos metadatos
             insert_sql = f"""
                 SET http_keep_alive=false;
-                SET custom_user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
                 INSERT INTO {table_name}
                 SELECT 
                     * EXCLUDE (fecha, filename),

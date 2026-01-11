@@ -285,7 +285,21 @@ class DuckLakeConnectionManager:
         # Create connection
         con = duckdb.connect()
         
-        # Install and load critical extensions first
+        # IMPORTANT: Set custom_user_agent BEFORE loading httpfs extension
+        # Once httpfs is loaded, this setting cannot be changed
+        con.execute(f"SET custom_user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64)';")
+        
+        # Apply other configurable DuckDB parameters early (before extensions)
+        con.execute(f"SET memory_limit='{duckdb_config['memory_limit']}';")
+        con.execute(f"SET threads={duckdb_config['threads']};")
+        con.execute(f"SET worker_threads={duckdb_config['worker_threads']};")
+        con.execute(f"SET max_temp_directory_size='{duckdb_config['max_temp_directory_size']}';")
+        con.execute(f"SET temp_directory='{duckdb_config['temp_directory']}';")
+        con.execute(f"SET enable_object_cache={str(duckdb_config['enable_object_cache']).lower()};")
+        con.execute(f"SET preserve_insertion_order=false;")
+        con.execute(f"SET force_download=false;")
+        
+        # Install and load critical extensions
         # ducklake: Install from core_nightly with FORCE INSTALL
         try:
             con.execute("FORCE INSTALL ducklake FROM core_nightly;")
@@ -303,6 +317,7 @@ class DuckLakeConnectionManager:
                 raise
         
         # postgres and httpfs: Always installed by default
+        # Note: custom_user_agent must be set BEFORE loading httpfs
         critical_extensions = ['postgres', 'httpfs']
         for ext in critical_extensions:
             load_extension(con, ext)
@@ -310,22 +325,12 @@ class DuckLakeConnectionManager:
         # spatial: Only load when needed (not in bronze layer)
         # Will be loaded manually in silver layer tasks if needed
         
+        # Configure S3/RustFS settings (after httpfs is loaded)
         con.execute(f"SET s3_endpoint='{S3_ENDPOINT}';")
         con.execute(f"SET s3_access_key_id='{RUSTFS_USER}';")
         con.execute(f"SET s3_secret_access_key='{RUSTFS_PASSWORD}';")
         con.execute(f"SET s3_use_ssl={RUSTFS_SSL};")
         con.execute("SET s3_url_style='path';")
-        con.execute("SET preserve_insertion_order=false;")
-        
-        # Apply configurable DuckDB parameters
-        con.execute(f"SET memory_limit='{duckdb_config['memory_limit']}';")
-        con.execute(f"SET threads={duckdb_config['threads']};")
-        con.execute(f"SET worker_threads={duckdb_config['worker_threads']};")
-        con.execute(f"SET max_temp_directory_size='{duckdb_config['max_temp_directory_size']}';")
-        con.execute(f"SET temp_directory='{duckdb_config['temp_directory']}';")
-        con.execute(f"SET enable_object_cache={str(duckdb_config['enable_object_cache']).lower()};")
-        con.execute(f"SET custom_user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64)';")
-        con.execute(f"SET force_download=false;")
 
         databases = con.execute("SELECT database_name FROM duckdb_databases();").fetchdf()
         if 'ducklake' not in databases['database_name'].values:
