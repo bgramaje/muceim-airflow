@@ -587,6 +587,99 @@ def execute_sql_or_cloud_run(sql_query: str, post_process_func=None, **context) 
             raise RuntimeError(error_msg) from e
 
 
+def exec_gcp_ducklake_ingestor_from_http(
+    table_name: str,
+    url: str,
+    original_url: str = None,
+    **context
+) -> Dict:
+    """
+    Ejecuta un Cloud Run Job para mergear datos CSV directamente desde una URL HTTP.
+    
+    Esta función ejecuta un Cloud Run Job que:
+    1. Lee el CSV directamente desde la URL HTTP (sin descargar a RustFS)
+    2. Mergea los datos en la tabla DuckDB especificada
+    3. Se ejecuta y termina automáticamente
+    
+    El main.py del contenedor es agnóstico - simplemente recibe la URL y la procesa.
+    DuckDB con httpfs puede leer tanto S3 como HTTP directamente.
+    
+    Parameters:
+    - table_name: Nombre de la tabla (sin prefijo 'bronze_')
+    - url: URL HTTP del archivo CSV
+    - original_url: URL original para logging/auditing (opcional, puede ser la misma que url)
+    - **context: Contexto de Airflow (se pasa automáticamente)
+    
+    Returns:
+    - Dict con información del resultado
+    
+    Raises:
+    - ValueError: Si falta configuración requerida
+    - RuntimeError: Si el job falla
+    """    
+    conn_info = _get_cloud_run_connection()
+    if not conn_info:
+        raise ValueError("Cloud Run connection not available. Check Airflow Variables: GCP_CLOUD_RUN_REGION, GCP_PROJECT_ID")
+    
+    credentials, region, project_id = conn_info
+    job_name = Variable.get('GCP_CLOUD_RUN_JOB_NAME', default_var=None)
+    
+    if not job_name:
+        raise ValueError("GCP_CLOUD_RUN_JOB_NAME Airflow Variable must be set")
+    
+    env_vars_list = [
+        {'name': 'TABLE_NAME', 'value': table_name},
+        {'name': 'URL', 'value': url},
+    ]
+    
+    if original_url:
+        env_vars_list.append({'name': 'ORIGINAL_URL', 'value': original_url})
+    else:
+        env_vars_list.append({'name': 'ORIGINAL_URL', 'value': url})
+    
+    try:
+        client = run_v2.JobsClient(credentials=credentials)
+        
+        job_path = f"projects/{project_id}/locations/{region}/jobs/{job_name}"
+        
+        request = run_v2.RunJobRequest(
+            name=job_path,
+            overrides=run_v2.RunJobRequest.Overrides(
+                container_overrides=[
+                    run_v2.RunJobRequest.Overrides.ContainerOverride(
+                        env=[
+                            run_v2.EnvVar(name=env['name'], value=env['value'])
+                            for env in env_vars_list
+                        ]
+                    )
+                ]
+            )
+        )
+        
+        operation = client.run_job(request=request)
+        execution = operation.result()
+        execution_name = execution.name
+        
+        executions_client = run_v2.ExecutionsClient(credentials=credentials)
+        
+        start_time = time.time()
+        _wait_for_cloud_run_execution(executions_client, execution_name)
+        elapsed_time = time.time() - start_time
+        
+        return {
+            'status': 'success',
+            'message': f'Data merged successfully into {table_name} from URL',
+            'table_name': table_name,
+            'url': url,
+            'execution_name': execution_name,
+            'execution_time_seconds': int(elapsed_time)
+        }
+        
+    except Exception as e:
+        error_msg = f"Failed to execute Cloud Run Job: {str(e)}"
+        raise RuntimeError(error_msg) from e
+
+
 def merge_csv_or_cloud_run(
     table_name: str,
     url: str,
@@ -598,6 +691,8 @@ def merge_csv_or_cloud_run(
     Esta función decide automáticamente qué método usar.
     Detecta automáticamente si la URL es una ruta S3 (empieza con s3://) o una URL HTTP.
     
+    NEW: URLs HTTP ahora se procesan directamente en Cloud Run sin descargar a RustFS.
+    
     Parameters:
     - table_name: Nombre de la tabla (sin prefijo 'bronze_')
     - url: Ruta S3 del archivo CSV (s3://bucket/key) o URL HTTP
@@ -608,35 +703,45 @@ def merge_csv_or_cloud_run(
     - Dict con información del resultado
     """
     is_s3_path = url.startswith("s3://")
+    is_http_url = url.startswith("http://") or url.startswith("https://")
     
-    if _get_cloud_run_connection() and is_s3_path:
-        return exec_gcp_ducklake_ingestor(
-            table_name=table_name,
-            url=url,
-            original_url=original_url,
-            **context
-        )
-    else:
-        # Ejecutar localmente usando merge_from_csv de bronze.utils
-        from bronze.utils import merge_from_csv
-        import time
+    if _get_cloud_run_connection():
+        if is_s3_path:
+            return exec_gcp_ducklake_ingestor(
+                table_name=table_name,
+                url=url,
+                original_url=original_url,
+                **context
+            )
+        elif is_http_url:
+            # NEW: Process HTTP URLs directly in Cloud Run without downloading to RustFS
+            return exec_gcp_ducklake_ingestor_from_http(
+                table_name=table_name,
+                url=url,
+                original_url=original_url,
+                **context
+            )
+    
+    # Fallback to local execution
+    from bronze.utils import merge_from_csv
+    import time
+    
+    start_time = time.time()
+    
+    try:
+        # merge_from_csv espera el nombre sin prefijo, y la URL puede ser S3 o HTTP
+        merge_from_csv(table_name, url)
         
-        start_time = time.time()
+        elapsed_time = time.time() - start_time
         
-        try:
-            # merge_from_csv espera el nombre sin prefijo, y la URL puede ser S3 o HTTP
-            merge_from_csv(table_name, url)
-            
-            elapsed_time = time.time() - start_time
-            
-            return {
-                'status': 'success',
-                'message': f'Data merged successfully into {table_name} (local)',
-                'table_name': table_name,
-                'url': url,
-                'execution_name': 'local',
-                'execution_time_seconds': int(elapsed_time)
-            }
-        except Exception as e:
-            error_msg = f"Failed to merge CSV locally: {str(e)}"
-            raise RuntimeError(error_msg) from e
+        return {
+            'status': 'success',
+            'message': f'Data merged successfully into {table_name} (local)',
+            'table_name': table_name,
+            'url': url,
+            'execution_name': 'local',
+            'execution_time_seconds': int(elapsed_time)
+        }
+    except Exception as e:
+        error_msg = f"Failed to merge CSV locally: {str(e)}"
+        raise RuntimeError(error_msg) from e

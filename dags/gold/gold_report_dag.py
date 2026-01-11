@@ -67,8 +67,16 @@ with DAG(
     tags=["gold", "report"],
     description="Gold layer report generation - Has to be manually triggered with parameters",
     params={
-        "start": Param(type="string", description="Start date (YYYY-MM-DD)"),
-        "end": Param(type="string", description="End date (YYYY-MM-DD)"),
+        "start": Param(
+            type="string",
+            description="Start date (YYYY-MM-DD)",
+            schema={"type": "string", "format": "date"}
+        ),
+        "end": Param(
+            type="string",
+            description="End date (YYYY-MM-DD)",
+            schema={"type": "string", "format": "date"}
+        ),
         "polygon": Param(type="string", description="Polygon WKT"),
     },
     default_args={

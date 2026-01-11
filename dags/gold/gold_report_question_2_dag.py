@@ -59,8 +59,16 @@ with DAG(
     tags=["gold", "report", "question_2", "gravity_model"],
     description="Gold layer Question 2 report generation - Gravity Model analysis. Has to be manually triggered with parameters",
     params={
-        "start": Param(type="string", description="Start date (YYYY-MM-DD)"),
-        "end": Param(type="string", description="End date (YYYY-MM-DD)"),
+        "start": Param(
+            type="string",
+            description="Start date (YYYY-MM-DD)",
+            schema={"type": "string", "format": "date"}
+        ),
+        "end": Param(
+            type="string",
+            description="End date (YYYY-MM-DD)",
+            schema={"type": "string", "format": "date"}
+        ),
         "polygon": Param(type="string", description="Polygon WKT"),
     },
     default_args={

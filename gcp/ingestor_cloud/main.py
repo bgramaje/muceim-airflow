@@ -28,16 +28,17 @@ def _build_merge_condition(columns):
     ])
 
 
-def _get_csv_source_query(s3_path, original_url=None):
+def _get_csv_source_query(url, original_url=None):
     """
-    Genera la subconsulta SELECT para leer los CSVs desde S3.
+    Genera la subconsulta SELECT para leer los CSVs desde cualquier URL.
+    DuckDB con httpfs puede leer tanto S3 como HTTP directamente.
     Mantiene all_varchar = true para un bronze schema flexible.
     
     Args:
-        s3_path: Ruta S3 del archivo (s3://bucket/key)
+        url: URL del archivo (puede ser s3://bucket/key, http://..., o https://...)
         original_url: URL original para logging (opcional)
     """
-    source_file_value = original_url if original_url else s3_path
+    source_file_value = original_url if original_url else url
 
     return f"""
         SELECT 
@@ -45,7 +46,7 @@ def _get_csv_source_query(s3_path, original_url=None):
             CURRENT_TIMESTAMP AS loaded_at,
             '{source_file_value}' AS source_file
         FROM read_csv(
-            '{s3_path}',
+            '{url}',
             filename = true,
             header = true,
             all_varchar = true,
@@ -57,21 +58,14 @@ def main():
     """Función principal del Cloud Run Job."""
     try:
         table_name = os.environ.get("TABLE_NAME")
-        s3_path = os.environ.get("URL")  # Ruta S3
+        url = os.environ.get("URL")  # URL del archivo (S3 o HTTP)
         original_url = os.environ.get("ORIGINAL_URL")  # URL original para logging (opcional)
 
-        if not table_name or not s3_path:
-            print("ERROR: Missing required environment variables: TABLE_NAME and URL (S3 path)")
+        if not table_name or not url:
+            print("ERROR: Missing required environment variables: TABLE_NAME and URL")
             sys.exit(1)
 
-        # Validar que la URL es una ruta S3
-        if not s3_path.startswith("s3://"):
-            raise ValueError(
-                f"Invalid S3 path format: {s3_path}. "
-                "Expected format: s3://bucket/key"
-            )
-
-        print(f"[CLOUD_RUN_JOB] Processing S3 path: {s3_path}")
+        print(f"[CLOUD_RUN_JOB] Processing URL: {url}")
         if original_url:
             print(f"[CLOUD_RUN_JOB] Original URL: {original_url}")
 
@@ -103,8 +97,8 @@ def main():
 
         print(f"[CLOUD_RUN_JOB] Merge keys: {merge_keys}")
 
-        print(f"[CLOUD_RUN_JOB] Reading CSV from RustFS S3 into staging: {s3_path}")
-        source_query = _get_csv_source_query(s3_path, original_url=original_url)
+        print(f"[CLOUD_RUN_JOB] Reading CSV from URL into staging: {url}")
+        source_query = _get_csv_source_query(url, original_url=original_url)
 
         # Staging table (TEMP) para evitar re-leer S3 durante el MERGE
         staging_table = f"tmp_{table_name}_staging"
@@ -137,7 +131,7 @@ def main():
                 INSERT *;
         """)
 
-        print(f"[CLOUD_RUN_JOB] Successfully read CSV from RustFS S3 into staging")
+        print(f"[CLOUD_RUN_JOB] Successfully read CSV from URL into staging")
         print(f"[CLOUD_RUN_JOB] Merged successfully into {table_name}")
 
         con.close()

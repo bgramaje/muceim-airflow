@@ -1,11 +1,19 @@
 """
 MITMA-specific Utility functions for Bronze layer.
 Contains helper functions for URL fetching and zoning data processing.
+
+V2 Features:
+- Retry with exponential backoff for transient errors
+- Streaming download for memory efficiency
+- Batch download with parallel processing
+- Optimized MERGE with deferred deduplication
+- Partitioned tables by year/month/day
 """
 
 from utils.utils import get_ducklake_connection
 import re
 import urllib.request
+import urllib.error
 import urllib.parse
 import requests
 import pandas as pd
@@ -13,8 +21,12 @@ import geopandas as gpd
 import os
 import io
 import tempfile
+import time
 from datetime import datetime
 from shapely.validation import make_valid
+from functools import wraps
+from typing import List, Dict, Callable, Optional, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 
 # Ensure we can import from parent directory
@@ -22,6 +34,492 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 LAKE_LAYER = 'bronze'
 RUSTFS_RAW_BUCKET = 'mitma-raw'  # S3 bucket names cannot contain underscores, use hyphen instead
+
+# ============================================================================
+# V2: RETRY & RESILIENCE CONSTANTS
+# ============================================================================
+MAX_RETRIES = 5
+INITIAL_BACKOFF = 2  # seconds
+MAX_BACKOFF = 120  # seconds
+CHUNK_SIZE = 8 * 1024 * 1024  # 8MB chunks for streaming
+DOWNLOAD_TIMEOUT = 600  # 10 minutes timeout for large files
+
+
+# ============================================================================
+# V2: RETRY DECORATOR WITH EXPONENTIAL BACKOFF
+# ============================================================================
+def retry_with_backoff(
+    max_retries: int = MAX_RETRIES,
+    initial_backoff: float = INITIAL_BACKOFF,
+    max_backoff: float = MAX_BACKOFF,
+    retryable_exceptions: tuple = (
+        urllib.error.URLError,
+        TimeoutError,
+        ConnectionError,
+        ConnectionResetError,
+        BrokenPipeError,
+        OSError,
+    )
+):
+    """
+    Decorator for retry with exponential backoff.
+    
+    Parameters:
+    - max_retries: Maximum number of retry attempts
+    - initial_backoff: Initial wait time in seconds
+    - max_backoff: Maximum wait time in seconds
+    - retryable_exceptions: Tuple of exception types to retry on
+    """
+    def decorator(func: Callable):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except retryable_exceptions as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        backoff = min(initial_backoff * (2 ** attempt), max_backoff)
+                        # Add jitter to avoid thundering herd
+                        import random
+                        jitter = random.uniform(0, backoff * 0.1)
+                        wait_time = backoff + jitter
+                        print(f"[RETRY] Attempt {attempt + 1}/{max_retries} failed: {e}. "
+                              f"Retrying in {wait_time:.1f}s...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"[RETRY] All {max_retries} attempts failed for {func.__name__}")
+            raise last_exception
+        return wrapper
+    return decorator
+
+
+# ============================================================================
+# V2: STREAMING DOWNLOAD WITH RETRY (to disk)
+# ============================================================================
+@retry_with_backoff()
+def download_url_to_file(url: str, file_path: str, timeout: int = DOWNLOAD_TIMEOUT) -> int:
+    """
+    Downloads a file using streaming to disk with automatic retry.
+    Memory efficient - writes directly to disk without accumulating in memory.
+    
+    Parameters:
+    - url: URL to download
+    - file_path: Path to save the file
+    - timeout: Timeout in seconds
+    
+    Returns:
+    - Total bytes downloaded
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "MITMA-DuckLake-Loader"})
+    
+    total_size = 0
+    last_progress_log = 0
+    
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        content_length = response.headers.get('Content-Length')
+        expected_size = int(content_length) if content_length else None
+        
+        with open(file_path, 'wb') as f:
+            while True:
+                chunk = response.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                f.write(chunk)
+                total_size += len(chunk)
+                
+                # Log progress every 10MB
+                if expected_size and total_size - last_progress_log >= 10 * 1024 * 1024:
+                    progress = (total_size / expected_size) * 100
+                    print(f"[DOWNLOAD] Progress: {progress:.1f}% ({total_size:,} / {expected_size:,} bytes)")
+                    last_progress_log = total_size
+    
+    print(f"[DOWNLOAD] Complete: {total_size:,} bytes")
+    return total_size
+
+
+# ============================================================================
+# V2: IMPROVED DOWNLOAD TO RUSTFS WITH STREAMING (memory efficient)
+# ============================================================================
+def download_url_to_rustfs_v2(url: str, dataset: str, zone_type: str) -> str:
+    """
+    V2: Improved version with streaming download to disk and automatic retry.
+    Memory efficient - uses temporary file on disk instead of loading into memory.
+    
+    Parameters:
+    - url: URL of the file to download
+    - dataset: Dataset type ('od', 'people_day', 'overnight_stay')
+    - zone_type: Zone type ('distritos', 'municipios', 'gau')
+    
+    Returns:
+    - S3 path in format s3://mitma-raw/{dataset}/{zone_type}/{filename}
+    """
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+    
+    parsed_url = urllib.parse.urlparse(url)
+    filename = os.path.basename(parsed_url.path)
+    
+    if not filename:
+        raise ValueError(f"Could not extract filename from URL: {url}")
+    
+    s3_key = f"{dataset}/{zone_type}/{filename}"
+    s3_path = f"s3://{RUSTFS_RAW_BUCKET}/{s3_key}"
+    
+    print(f"[DOWNLOAD_V2] Target S3 path: {s3_path}")
+    
+    s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
+    
+    # Ensure bucket exists
+    try:
+        if not s3_hook.check_for_bucket(RUSTFS_RAW_BUCKET):
+            s3_hook.create_bucket(bucket_name=RUSTFS_RAW_BUCKET)
+            print(f"[DOWNLOAD_V2] Created bucket '{RUSTFS_RAW_BUCKET}'")
+    except Exception as e:
+        print(f"[DOWNLOAD_V2] Warning checking bucket: {e}")
+    
+    # Check if file already exists (idempotent)
+    if s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET):
+        print(f"[DOWNLOAD_V2] File already exists: {s3_path}")
+        return s3_path
+    
+    # Download to temporary file on disk (memory efficient)
+    temp_file = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp:
+            temp_file = tmp.name
+        
+        print(f"[DOWNLOAD_V2] Starting streaming download to disk: {url}")
+        total_bytes = download_url_to_file(url, temp_file)
+        
+        # Upload to RustFS from disk file
+        print(f"[DOWNLOAD_V2] Uploading {total_bytes:,} bytes to {s3_path}")
+        s3_hook.load_file(
+            filename=temp_file,
+            key=s3_key,
+            bucket_name=RUSTFS_RAW_BUCKET,
+            replace=True
+        )
+        print(f"[DOWNLOAD_V2] Successfully uploaded to {s3_path}")
+    finally:
+        # Always clean up temporary file
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.unlink(temp_file)
+            except Exception as e:
+                print(f"[DOWNLOAD_V2] Warning: Could not delete temp file {temp_file}: {e}")
+    
+    return s3_path
+
+
+# ============================================================================
+# V2: BATCH DOWNLOAD WITH PARALLEL PROCESSING
+# ============================================================================
+def download_batch_to_rustfs(
+    urls: List[str],
+    dataset: str,
+    zone_type: str,
+    max_parallel: int = 4
+) -> Dict[str, str]:
+    """
+    V2: Downloads multiple URLs in parallel to RustFS.
+    
+    Parameters:
+    - urls: List of URLs to download
+    - dataset: Dataset type
+    - zone_type: Zone type
+    - max_parallel: Maximum parallel downloads (default: 4)
+    
+    Returns:
+    - Dict mapping original_url -> s3_path for successful downloads
+    """
+    results = {}
+    failed = []
+    
+    def download_single(url: str) -> tuple:
+        try:
+            s3_path = download_url_to_rustfs_v2(url, dataset, zone_type)
+            return (url, s3_path, None)
+        except Exception as e:
+            return (url, None, str(e))
+    
+    print(f"[BATCH_DOWNLOAD] Starting parallel download of {len(urls)} URLs (max_parallel={max_parallel})")
+    
+    with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        futures = {executor.submit(download_single, url): url for url in urls}
+        
+        for i, future in enumerate(as_completed(futures), 1):
+            url, s3_path, error = future.result()
+            if error:
+                print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Failed: {os.path.basename(url)} - {error}")
+                failed.append((url, error))
+            else:
+                results[url] = s3_path
+                print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Success: {os.path.basename(url)}")
+    
+    print(f"[BATCH_DOWNLOAD] Completed: {len(results)} success, {len(failed)} failed")
+    
+    if failed:
+        print(f"[BATCH_DOWNLOAD] Failed URLs:")
+        for url, error in failed[:5]:  # Show first 5 failures
+            print(f"  - {os.path.basename(url)}: {error}")
+        if len(failed) > 5:
+            print(f"  ... and {len(failed) - 5} more")
+    
+    return results
+
+
+# ============================================================================
+# V2: BATCH DELETE FROM RUSTFS
+# ============================================================================
+def delete_batch_from_rustfs(s3_paths: List[str]) -> Dict[str, bool]:
+    """
+    V2: Deletes multiple files from RustFS in batch.
+    
+    Parameters:
+    - s3_paths: List of S3 paths to delete
+    
+    Returns:
+    - Dict mapping s3_path -> success (True/False)
+    """
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+    
+    results = {}
+    s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
+    
+    print(f"[BATCH_DELETE] Deleting {len(s3_paths)} files from RustFS")
+    
+    for s3_path in s3_paths:
+        try:
+            if not s3_path.startswith("s3://"):
+                results[s3_path] = False
+                continue
+            
+            path_without_prefix = s3_path[5:]
+            parts = path_without_prefix.split("/", 1)
+            
+            if len(parts) != 2 or parts[0] != RUSTFS_RAW_BUCKET:
+                results[s3_path] = False
+                continue
+            
+            s3_key = parts[1]
+            
+            if s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET):
+                s3_client = s3_hook.get_conn()
+                s3_client.delete_object(Bucket=RUSTFS_RAW_BUCKET, Key=s3_key)
+            
+            results[s3_path] = True
+        except Exception as e:
+            print(f"[BATCH_DELETE] Error deleting {s3_path}: {e}")
+            results[s3_path] = False
+    
+    success_count = sum(1 for v in results.values() if v)
+    print(f"[BATCH_DELETE] Completed: {success_count}/{len(s3_paths)} deleted successfully")
+    
+    return results
+
+
+# ============================================================================
+# V2: OPTIMIZED BULK INSERT (NO MERGE, DEFERRED DEDUP)
+# ============================================================================
+def bulk_insert_from_csv(table_name: str, urls: List[str], deduplicate: bool = False):
+    """
+    V2: Bulk inserts multiple CSVs at once. Much faster than individual MERGEs.
+    Optionally deduplicates at the end.
+    
+    Parameters:
+    - table_name: Table name (without 'bronze_' prefix)
+    - urls: List of CSV URLs (can be S3 paths or HTTP URLs)
+    - deduplicate: If True, removes duplicates after insert
+    """
+    full_table_name = f'{LAKE_LAYER}_{table_name}'
+    con = get_ducklake_connection()
+    
+    if not urls:
+        print(f"[BULK_INSERT] No URLs provided, skipping")
+        return
+    
+    url_list_str = "[" + ", ".join([f"'{u}'" for u in urls]) + "]"
+    
+    # Direct INSERT (no MERGE) - much faster
+    insert_sql = f"""
+        INSERT INTO {full_table_name}
+        SELECT 
+            * EXCLUDE (filename),
+            CURRENT_TIMESTAMP AS loaded_at,
+            filename AS source_file
+        FROM read_csv(
+            {url_list_str},
+            filename = true,
+            all_varchar = true
+        )
+    """
+    
+    print(f"[BULK_INSERT] Inserting {len(urls)} files into {full_table_name}")
+    start_time = time.time()
+    
+    try:
+        con.execute(insert_sql)
+        elapsed = time.time() - start_time
+        print(f"[BULK_INSERT] Insert completed in {elapsed:.1f}s")
+    except Exception as e:
+        print(f"[BULK_INSERT] Error during insert: {e}")
+        raise
+    
+    if deduplicate:
+        print(f"[BULK_INSERT] Deduplicating {full_table_name}...")
+        dedup_start = time.time()
+        
+        try:
+            # Get data columns for deduplication
+            data_columns = _get_data_columns(full_table_name)
+            cols_str = ", ".join(data_columns)
+            
+            # Use window function to find and remove duplicates
+            dedup_sql = f"""
+                DELETE FROM {full_table_name}
+                WHERE rowid IN (
+                    SELECT rowid FROM (
+                        SELECT rowid,
+                               ROW_NUMBER() OVER (PARTITION BY {cols_str} ORDER BY loaded_at DESC) as rn
+                        FROM {full_table_name}
+                    ) WHERE rn > 1
+                )
+            """
+            con.execute(dedup_sql)
+            
+            dedup_elapsed = time.time() - dedup_start
+            print(f"[BULK_INSERT] Deduplication completed in {dedup_elapsed:.1f}s")
+        except Exception as e:
+            print(f"[BULK_INSERT] Warning: Deduplication failed (non-critical): {e}")
+
+
+# ============================================================================
+# V2: CREATE PARTITIONED TABLE
+# ============================================================================
+def create_partitioned_table_from_csv(
+    table_name: str,
+    url: str,
+    partition_by_date: bool = True
+):
+    """
+    V2: Creates a DuckDB table with partitioning by year/month/day.
+    Only applies partitioning to new (empty) tables.
+    
+    Parameters:
+    - table_name: Table name (without 'bronze_' prefix)
+    - url: First CSV URL to infer schema
+    - partition_by_date: If True, partitions by year/month/day of 'fecha' column
+    """
+    full_table_name = f'{LAKE_LAYER}_{table_name}'
+    con = get_ducklake_connection()
+    
+    # Check if table already exists
+    table_exists = False
+    try:
+        result = con.execute(f"""
+            SELECT COUNT(*) FROM information_schema.tables 
+            WHERE table_name = '{full_table_name}'
+        """).fetchone()
+        table_exists = result[0] > 0
+    except:
+        pass
+    
+    if table_exists:
+        print(f"[CREATE_TABLE_V2] Table {full_table_name} already exists, skipping creation")
+        return {'status': 'exists', 'table_name': full_table_name}
+    
+    source_sql = _get_csv_source_query([url])
+    
+    print(f"[CREATE_TABLE_V2] Creating table {full_table_name} with schema from {os.path.basename(url)}")
+    
+    # Create table with schema
+    con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {full_table_name} AS
+        {source_sql}
+        LIMIT 0;
+    """)
+    
+    # Apply partitioning if requested and table is new
+    if partition_by_date:
+        try:
+            # Partition by year/month/day for optimal query performance
+            # fecha is in format YYYYMMDD
+            con.execute(f"""
+                ALTER TABLE {full_table_name} 
+                SET PARTITIONED BY (
+                    substr(fecha, 1, 4)::INTEGER,
+                    substr(fecha, 5, 2)::INTEGER,
+                    substr(fecha, 7, 2)::INTEGER
+                );
+            """)
+            print(f"[CREATE_TABLE_V2] Applied partitioning by year/month/day")
+        except Exception as e:
+            print(f"[CREATE_TABLE_V2] Warning: Could not apply partitioning: {e}")
+    
+    print(f"[CREATE_TABLE_V2] Table {full_table_name} is ready")
+    return {'status': 'created', 'table_name': full_table_name, 'partitioned': partition_by_date}
+
+
+# ============================================================================
+# V2: FINALIZE TABLE (ANALYZE ONCE AT END)
+# ============================================================================
+def finalize_table(table_name: str, run_analyze: bool = True) -> Dict[str, Any]:
+    """
+    V2: Finalizes a table after bulk operations.
+    Runs ANALYZE once at the end instead of after each insert.
+    
+    Parameters:
+    - table_name: Full table name (with 'bronze_' prefix)
+    - run_analyze: Whether to run ANALYZE
+    
+    Returns:
+    - Dict with table stats
+    """
+    con = get_ducklake_connection()
+    
+    print(f"[FINALIZE] Finalizing table {table_name}")
+    
+    if run_analyze:
+        try:
+            start_time = time.time()
+            con.execute(f"ANALYZE {table_name};")
+            elapsed = time.time() - start_time
+            print(f"[FINALIZE] ANALYZE completed in {elapsed:.1f}s")
+        except Exception as e:
+            print(f"[FINALIZE] Warning: ANALYZE failed (non-critical): {e}")
+    
+    # Get table stats
+    try:
+        count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        print(f"[FINALIZE] Table {table_name} has {count:,} records")
+        return {'status': 'success', 'table_name': table_name, 'record_count': count}
+    except Exception as e:
+        print(f"[FINALIZE] Warning: Could not get record count: {e}")
+        return {'status': 'success', 'table_name': table_name}
+
+
+# ============================================================================
+# V2: CREATE URL BATCHES
+# ============================================================================
+def create_url_batches(urls: List[str], batch_size: int = 10) -> List[List[str]]:
+    """
+    V2: Divides a list of URLs into batches for parallel processing.
+    
+    Parameters:
+    - urls: List of URLs
+    - batch_size: Number of URLs per batch
+    
+    Returns:
+    - List of URL batches
+    """
+    if not urls:
+        return []
+    
+    batches = [urls[i:i + batch_size] for i in range(0, len(urls), batch_size)]
+    print(f"[BATCH] Created {len(batches)} batches of max {batch_size} URLs each")
+    
+    return batches
 
 
 def get_mitma_urls(dataset, zone_type, start_date, end_date):

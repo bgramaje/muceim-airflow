@@ -27,9 +27,9 @@ def _get_default_duckdb_config():
     
     Default values:
     - memory_limit: 8GB
-    - threads: 4
-    - worker_threads: 4
-    - max_temp_directory_size: 40GiB
+    - threads: 6
+    - worker_threads: 6
+    - max_temp_directory_size: 80GiB
     - temp_directory: /tmp/duckdb
     - enable_object_cache: true
     
@@ -44,6 +44,128 @@ def _get_default_duckdb_config():
         'temp_directory': '/tmp/duckdb',
         'enable_object_cache': True,
     }
+
+
+def get_dynamic_duckdb_config(
+    batch_size: int = 10,
+    estimated_file_size_mb: float = 100,
+    max_memory_gb: int = 28,
+    max_threads: int = 8
+) -> dict:
+    """
+    Calculates optimal DuckDB configuration based on batch size and workload.
+    
+    This function dynamically adjusts DuckDB resources based on the expected
+    workload, preventing OOM errors and optimizing performance.
+    
+    Parameters:
+    - batch_size: Number of files to process in parallel
+    - estimated_file_size_mb: Average file size in MB (default: 100MB for MITMA files)
+    - max_memory_gb: Maximum memory limit in GB (default: 28GB)
+    - max_threads: Maximum thread count (default: 8)
+    
+    Returns:
+    - dict: Optimized DuckDB configuration
+    
+    Example:
+        # For a small batch (5 files)
+        config = get_dynamic_duckdb_config(batch_size=5)
+        # Returns: {'memory_limit': '4GB', 'threads': 4, ...}
+        
+        # For a large batch (20 files)
+        config = get_dynamic_duckdb_config(batch_size=20)
+        # Returns: {'memory_limit': '16GB', 'threads': 8, ...}
+    """
+    # Estimate memory needed: 2x the data size for processing overhead
+    estimated_data_gb = (batch_size * estimated_file_size_mb) / 1000
+    estimated_memory_gb = min(
+        max(4, int(estimated_data_gb * 2)),  # At least 4GB, 2x data size
+        max_memory_gb
+    )
+    
+    # Threads scale with batch size but have limits
+    threads = min(
+        max(4, batch_size // 2),  # At least 4 threads
+        max_threads
+    )
+    
+    # Temp directory size should be 2x memory for spillover
+    temp_size_gb = estimated_memory_gb * 2
+    
+    config = {
+        'memory_limit': f'{estimated_memory_gb}GB',
+        'threads': threads,
+        'worker_threads': threads,
+        'max_temp_directory_size': f'{temp_size_gb}GiB',
+        'temp_directory': '/tmp/duckdb',
+        'enable_object_cache': True,
+    }
+    
+    print(f"[DUCKDB_CONFIG] Dynamic config for batch_size={batch_size}: "
+          f"memory={estimated_memory_gb}GB, threads={threads}")
+    
+    return config
+
+
+def get_config_for_workload(workload: str = 'default') -> dict:
+    """
+    Returns predefined DuckDB configurations for common workloads.
+    
+    Parameters:
+    - workload: One of 'small', 'medium', 'large', 'heavy', 'default'
+    
+    Workload profiles:
+    - small: 1-5 files, light processing (4GB RAM, 4 threads)
+    - medium: 5-15 files, moderate processing (8GB RAM, 6 threads)
+    - large: 15-30 files, heavy processing (16GB RAM, 8 threads)
+    - heavy: 30+ files or very large files (28GB RAM, 8 threads)
+    - default: Standard configuration (8GB RAM, 6 threads)
+    
+    Returns:
+    - dict: DuckDB configuration for the workload
+    """
+    profiles = {
+        'small': {
+            'memory_limit': '4GB',
+            'threads': 4,
+            'worker_threads': 4,
+            'max_temp_directory_size': '10GiB',
+            'temp_directory': '/tmp/duckdb',
+            'enable_object_cache': True,
+        },
+        'medium': {
+            'memory_limit': '8GB',
+            'threads': 6,
+            'worker_threads': 6,
+            'max_temp_directory_size': '20GiB',
+            'temp_directory': '/tmp/duckdb',
+            'enable_object_cache': True,
+        },
+        'large': {
+            'memory_limit': '16GB',
+            'threads': 8,
+            'worker_threads': 8,
+            'max_temp_directory_size': '40GiB',
+            'temp_directory': '/tmp/duckdb',
+            'enable_object_cache': True,
+        },
+        'heavy': {
+            'memory_limit': '28GB',
+            'threads': 8,
+            'worker_threads': 8,
+            'max_temp_directory_size': '80GiB',
+            'temp_directory': '/tmp/duckdb',
+            'enable_object_cache': True,
+        },
+        'default': _get_default_duckdb_config(),
+    }
+    
+    if workload not in profiles:
+        print(f"[DUCKDB_CONFIG] Unknown workload '{workload}', using default")
+        return profiles['default']
+    
+    print(f"[DUCKDB_CONFIG] Using '{workload}' workload profile")
+    return profiles[workload]
 
 
 class DuckLakeConnectionManager:
@@ -165,9 +287,29 @@ class DuckLakeConnectionManager:
         con = duckdb.connect()
         
         # Install and load critical extensions first
-        critical_extensions = ['ducklake', 'postgres', 'httpfs', 'spatial']
+        # ducklake: Install from core_nightly with FORCE INSTALL
+        try:
+            con.execute("FORCE INSTALL ducklake FROM core_nightly;")
+            con.execute("LOAD ducklake;")
+            print("Extension ducklake loaded from core_nightly")
+        except Exception as e:
+            print(f"Warning loading ducklake from core_nightly: {e}")
+            try:
+                # Fallback to standard install
+                con.execute("INSTALL ducklake;")
+                con.execute("LOAD ducklake;")
+                print("Extension ducklake loaded (standard install)")
+            except Exception as e2:
+                print(f"Failed to load ducklake: {e2}")
+                raise
+        
+        # postgres and httpfs: Always installed by default
+        critical_extensions = ['postgres', 'httpfs']
         for ext in critical_extensions:
             load_extension(con, ext)
+        
+        # spatial: Only load when needed (not in bronze layer)
+        # Will be loaded manually in silver layer tasks if needed
         
         con.execute(f"SET s3_endpoint='{S3_ENDPOINT}';")
         con.execute(f"SET s3_access_key_id='{RUSTFS_USER}';")
