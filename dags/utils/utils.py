@@ -161,12 +161,14 @@ class DuckLakeConnectionManager:
             );
         """)
 
+        # Escapar comillas simples en USER_AGENT_STR para SQL
+        escaped_user_agent = USER_AGENT_STR.replace("'", "''")
         con.execute(f"""
             CREATE OR REPLACE SECRET http (
                 TYPE HTTP,
-                EXTRA_HTTP_HEADERS MAP {
-                    'User-Agent': '{USER_AGENT_STR}'
-                }
+                EXTRA_HTTP_HEADERS MAP {{
+                    'User-Agent': '{escaped_user_agent}'
+                }}
             );
         """)
 
