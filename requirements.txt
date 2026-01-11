@@ -176,5 +176,3 @@ wirerope==1.0.0
 wrapt==2.0.1
 yarl==1.22.0
 zipp==3.23.0
-
-astro-run-dag # This package is needed for the astro run command. It will be removed before a deploy
