@@ -400,65 +400,85 @@ def bulk_insert_from_csv(table_name: str, urls: List[str], deduplicate: bool = F
 def create_partitioned_table_from_csv(
     table_name: str,
     url: str,
-    partition_by_date: bool = True
+    partition_by_date: bool = True,
+    fecha_as_timestamp: bool = False
 ):
     """
-    V2: Creates a DuckDB table with partitioning by year/month/day.
-    Only applies partitioning to new (empty) tables.
+    V3: Creates a DuckDB table with partitioning by year/month/day.
+    Simplified: just CREATE TABLE IF NOT EXISTS and ALTER for partitioning.
     
     Parameters:
     - table_name: Table name (without 'bronze_' prefix)
     - url: First CSV URL to infer schema
     - partition_by_date: If True, partitions by year/month/day of 'fecha' column
+    - fecha_as_timestamp: If True, converts fecha column to TIMESTAMP and partitions by timestamp functions
     """
     full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
     
-    # Check if table already exists
-    table_exists = False
-    try:
-        result = con.execute(f"""
-            SELECT COUNT(*) FROM information_schema.tables 
-            WHERE table_name = '{full_table_name}'
-        """).fetchone()
-        table_exists = result[0] > 0
-    except:
-        pass
+    print(f"[CREATE_TABLE_V3] Creating table {full_table_name} with schema from {os.path.basename(url)}")
     
-    if table_exists:
-        print(f"[CREATE_TABLE_V2] Table {full_table_name} already exists, skipping creation")
-        return {'status': 'exists', 'table_name': full_table_name}
-    
+    # Build CREATE TABLE query - infer schema from CSV
     source_sql = _get_csv_source_query([url])
     
-    print(f"[CREATE_TABLE_V2] Creating table {full_table_name} with schema from {os.path.basename(url)}")
+    if fecha_as_timestamp:
+        # Create table with fecha as TIMESTAMP
+        # Note: source_sql already includes source_file and loaded_at from _get_csv_source_query
+        create_table_sql = f"""
+            CREATE TABLE IF NOT EXISTS {full_table_name} AS
+            SELECT 
+                strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::TIMESTAMP AS fecha,
+                * EXCLUDE (fecha)
+            FROM ({source_sql})
+            LIMIT 0;
+        """
+    else:
+        # Create table with fecha as VARCHAR
+        create_table_sql = f"""
+            CREATE TABLE IF NOT EXISTS {full_table_name} AS
+            {source_sql}
+            LIMIT 0;
+        """
     
-    # Create table with schema
-    con.execute(f"""
-        CREATE TABLE IF NOT EXISTS {full_table_name} AS
-        {source_sql}
-        LIMIT 0;
-    """)
+    con.execute(create_table_sql)
     
-    # Apply partitioning if requested and table is new
+    # Apply partitioning if requested
     if partition_by_date:
         try:
-            # Partition by year/month/day for optimal query performance
-            # fecha is in format YYYYMMDD
-            con.execute(f"""
-                ALTER TABLE {full_table_name} 
-                SET PARTITIONED BY (
-                    substr(fecha, 1, 4)::INTEGER,
-                    substr(fecha, 5, 2)::INTEGER,
-                    substr(fecha, 7, 2)::INTEGER
-                );
-            """)
-            print(f"[CREATE_TABLE_V2] Applied partitioning by year/month/day")
+            if fecha_as_timestamp:
+                # Ensure fecha column is TIMESTAMP before partitioning
+                # Sometimes DuckDB may not infer the type correctly with LIMIT 0
+                ensure_timestamp_sql = f"""
+                    ALTER TABLE {full_table_name} 
+                    ALTER COLUMN fecha TYPE TIMESTAMP;
+                """
+                try:
+                    con.execute(ensure_timestamp_sql)
+                    print(f"[CREATE_TABLE_V3] Ensured fecha column is TIMESTAMP")
+                except Exception as e:
+                    # Column might already be TIMESTAMP or table might not exist yet
+                    print(f"[CREATE_TABLE_V3] Note: Could not alter fecha type (may already be TIMESTAMP): {e}")
+                
+                partition_sql = f"""
+                    ALTER TABLE {full_table_name} 
+                    SET PARTITIONED BY (year(CAST(fecha AS TIMESTAMP)), month(CAST(fecha AS TIMESTAMP)), day(CAST(fecha AS TIMESTAMP)));
+                """
+            else:
+                partition_sql = f"""
+                    ALTER TABLE {full_table_name} 
+                    SET PARTITIONED BY (
+                        substr(fecha, 1, 4)::INTEGER,
+                        substr(fecha, 5, 2)::INTEGER,
+                        substr(fecha, 7, 2)::INTEGER
+                    );
+                """
+            con.execute(partition_sql)
+            print(f"[CREATE_TABLE_V3] Applied partitioning")
         except Exception as e:
-            print(f"[CREATE_TABLE_V2] Warning: Could not apply partitioning: {e}")
+            print(f"[CREATE_TABLE_V3] Warning: Could not apply partitioning (table may already be partitioned): {e}")
     
-    print(f"[CREATE_TABLE_V2] Table {full_table_name} is ready")
-    return {'status': 'created', 'table_name': full_table_name, 'partitioned': partition_by_date}
+    print(f"[CREATE_TABLE_V3] Table {full_table_name} is ready")
+    return {'status': 'created', 'table_name': full_table_name, 'partitioned': partition_by_date, 'fecha_as_timestamp': fecha_as_timestamp}
 
 
 # ============================================================================
@@ -520,6 +540,185 @@ def create_url_batches(urls: List[str], batch_size: int = 10) -> List[List[str]]
     print(f"[BATCH] Created {len(batches)} batches of max {batch_size} URLs each")
     
     return batches
+
+
+# ============================================================================
+# V3: COPY BATCH TO TABLE WITH MULTI-THREADING
+# ============================================================================
+def copy_batch_to_table(
+    table_name: str,
+    s3_paths: List[str],
+    original_urls: Optional[List[str]] = None,
+    threads: int = 4,
+    fecha_as_timestamp: bool = False,
+    **context
+) -> Dict[str, Any]:
+    """
+    V3: Efficiently copies a batch of CSV files from RustFS to DuckDB table using INSERT INTO.
+    Builds complete SQL query and uses executor (Cloud Run) instead of ingestor.
+    Uses multiple threads internally and read_csv with multiple URLs for faster processing.
+    
+    This is faster than MERGE because it uses INSERT INTO (no deduplication during insert).
+    Deduplication should be done separately if needed.
+    
+    Parameters:
+    - table_name: Full table name (with 'bronze_' prefix)
+    - s3_paths: List of S3 paths to copy from RustFS
+    - original_urls: Optional list of original URLs for logging (must match s3_paths order)
+    - threads: Number of threads to use for DuckDB internal parallelization
+    - fecha_as_timestamp: If True, parses fecha from VARCHAR to TIMESTAMP
+    - **context: Airflow context for execute_sql_or_cloud_run
+    
+    Returns:
+    - Dict with results: {'success': int, 'failed': int, 'errors': List[str]}
+    """
+    from utils.gcp import execute_sql_or_cloud_run
+    
+    full_table_name = table_name if table_name.startswith('bronze_') else f'bronze_{table_name}'
+    
+    if not s3_paths:
+        return {'success': 0, 'failed': 0, 'errors': []}
+    
+    if original_urls is None:
+        original_urls = s3_paths
+    
+    if len(original_urls) != len(s3_paths):
+        raise ValueError("original_urls must have the same length as s3_paths")
+    
+    print(f"[COPY_BATCH] Processing {len(s3_paths)} files into {full_table_name} with {threads} threads using executor")
+    if fecha_as_timestamp:
+        print(f"[COPY_BATCH] Will parse fecha to TIMESTAMP")
+    
+    start_time = time.time()
+    
+    # Build SQL query - use read_csv with multiple URLs for faster processing
+    # DuckDB can process multiple URLs in parallel
+    # We'll use UNION ALL to ensure proper source_file mapping
+    union_parts = []
+    for s3_path, orig_url in zip(s3_paths, original_urls):
+        source_file_value = orig_url if orig_url else s3_path
+        source_file_value_escaped = source_file_value.replace("'", "''")
+        s3_path_escaped = s3_path.replace("'", "''")
+        
+        if fecha_as_timestamp:
+            union_parts.append(f"""
+                SELECT 
+                    strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::TIMESTAMP AS fecha,
+                    * EXCLUDE (fecha, filename),
+                    CURRENT_TIMESTAMP AS loaded_at,
+                    '{source_file_value_escaped}' AS source_file
+                FROM read_csv(
+                    '{s3_path_escaped}',
+                    filename = true,
+                    header = true,
+                    all_varchar = true
+                )
+            """)
+        else:
+            union_parts.append(f"""
+                SELECT 
+                    * EXCLUDE (filename),
+                    CURRENT_TIMESTAMP AS loaded_at,
+                    '{source_file_value_escaped}' AS source_file
+                FROM read_csv(
+                    '{s3_path_escaped}',
+                    filename = true,
+                    header = true,
+                    all_varchar = true
+                )
+            """)
+    
+    # Build complete SQL query with UNION ALL and optimizations
+    sql_query = f"""
+        SET threads={threads};
+        SET worker_threads={threads};
+        SET preserve_insertion_order=false;
+        SET enable_object_cache=true;
+        INSERT INTO {full_table_name}
+        {' UNION ALL '.join(union_parts)};
+    """
+    
+    try:
+        # Execute SQL using executor (Cloud Run or local)
+        result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
+        success_count = len(s3_paths)
+        print(f"[COPY_BATCH] Successfully processed {len(s3_paths)} files using executor with read_csv multiple URLs")
+    except Exception as e:
+        # If batch insert fails, log error
+        error_msg = f"Error copying batch: {str(e)}"
+        print(f"[COPY_BATCH] Batch insert failed: {error_msg}")
+        return {
+            'success': 0,
+            'failed': len(s3_paths),
+            'errors': [error_msg],
+            'elapsed_seconds': time.time() - start_time
+        }
+    
+    elapsed = time.time() - start_time
+    print(f"[COPY_BATCH] Completed in {elapsed:.1f}s: {success_count} success, 0 failed")
+    
+    return {
+        'success': success_count,
+        'failed': 0,
+        'errors': [],
+        'elapsed_seconds': elapsed
+    }
+
+
+def copy_from_csv_batch(
+    table_name: str,
+    batch: Dict[str, Any],
+    threads: int = 4,
+    fecha_as_timestamp: bool = False,
+    **context
+) -> Dict[str, Any]:
+    """
+    V3: Processes a batch of downloaded files using COPY (INSERT INTO) with multi-threading.
+    Uses executor (Cloud Run) instead of ingestor.
+    
+    Parameters:
+    - table_name: Table name (without 'bronze_' prefix)
+    - batch: Dict with 'downloaded' list containing {'original_url': str, 's3_path': str}
+    - threads: Number of threads for parallel processing
+    - fecha_as_timestamp: If True, parses fecha from VARCHAR to TIMESTAMP
+    - **context: Airflow context for execute_sql_or_cloud_run
+    
+    Returns:
+    - Dict with processing results
+    """
+    full_table_name = f'bronze_{table_name}'
+    downloaded = batch.get('downloaded', [])
+    batch_index = batch.get('batch_index', 0)
+    
+    if not downloaded:
+        return {
+            'batch_index': batch_index,
+            'status': 'skipped',
+            'processed': 0,
+            'failed': 0
+        }
+    
+    s3_paths = [item['s3_path'] for item in downloaded]
+    original_urls = [item.get('original_url', item['s3_path']) for item in downloaded]
+    
+    print(f"[COPY_BATCH_TASK] Processing batch {batch_index}: {len(s3_paths)} files using executor")
+    
+    result = copy_batch_to_table(
+        table_name=full_table_name,
+        s3_paths=s3_paths,
+        original_urls=original_urls,
+        threads=threads,
+        fecha_as_timestamp=fecha_as_timestamp,
+        **context
+    )
+    
+    return {
+        'batch_index': batch_index,
+        'status': 'success' if result['failed'] == 0 else 'partial',
+        'processed': result['success'],
+        'failed': result['failed'],
+        'errors': result['errors']
+    }
 
 
 def get_mitma_urls(dataset, zone_type, start_date, end_date):

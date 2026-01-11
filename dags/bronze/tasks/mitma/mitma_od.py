@@ -86,8 +86,8 @@ def BRONZE_mitma_od_create_partitioned_table(
     zone_type: str = 'municipios'
 ) -> Dict[str, Any]:
     """
-    V2: Creates a partitioned table for OD data.
-    Partitions by year/month/day of the fecha column.
+    V3: Creates a partitioned table for OD data with fecha as TIMESTAMP.
+    Partitions by year/month/day of the fecha TIMESTAMP column (like silver).
     """
     from bronze.utils import create_partitioned_table_from_csv
     
@@ -97,11 +97,12 @@ def BRONZE_mitma_od_create_partitioned_table(
     dataset = 'od'
     table_name = f'mitma_{dataset}_{zone_type}'
     
-    print(f"[TASK_V2] Creating partitioned table bronze_{table_name}")
+    print(f"[TASK_V3] Creating partitioned table bronze_{table_name} with fecha as TIMESTAMP")
     return create_partitioned_table_from_csv(
         table_name=table_name,
         url=urls[0],
-        partition_by_date=True
+        partition_by_date=True,
+        fecha_as_timestamp=True
     )
 
 
@@ -149,47 +150,126 @@ def BRONZE_mitma_od_download_batch(
 @task
 def BRONZE_mitma_od_process_batch(
     download_result: Dict[str, Any],
-    zone_type: str = 'municipios'
+    zone_type: str = 'municipios',
+    threads: int = 4,
+    **context
 ) -> Dict[str, Any]:
     """
-    V2: Processes downloaded files from RustFS into DuckDB.
+    V3: Processes downloaded files from RustFS into DuckDB using COPY (INSERT INTO) with multi-threading.
+    Uses executor (Cloud Run) instead of ingestor - builds complete SQL query and passes it to executor.
+    Parses fecha from VARCHAR to TIMESTAMP and uses read_csv with multiple URLs for faster processing.
+    Faster than MERGE because it uses INSERT INTO instead of MERGE.
     """
-    from utils.gcp import merge_csv_or_cloud_run
+    from bronze.utils import copy_from_csv_batch
     
     dataset = 'od'
-    downloaded = download_result.get('downloaded', [])
-    batch_index = download_result.get('batch_index', 0)
+    table_name = f'mitma_{dataset}_{zone_type}'
     
-    if not downloaded:
+    print(f"[TASK_V3] Processing batch {download_result.get('batch_index', 0)} with {threads} threads using executor")
+    print(f"[TASK_V3] Will parse fecha to TIMESTAMP")
+    
+    result = copy_from_csv_batch(
+        table_name=table_name,
+        batch=download_result,
+        threads=threads,
+        fecha_as_timestamp=True,
+        **context
+    )
+    
+    return result
+
+
+@task
+def BRONZE_mitma_od_download_and_process_batch(
+    batch: Dict[str, Any],
+    zone_type: str = 'municipios',
+    max_parallel: int = 4,
+    threads: int = 4,
+    **context
+) -> Dict[str, Any]:
+    """
+    V4: Combines download and process in a single task for better pipeline efficiency.
+    Downloads batch to RustFS, immediately processes it using executor (Cloud Run), and cleans up.
+    This allows processing to start as soon as each batch is downloaded, instead of waiting for all downloads.
+    
+    Parameters:
+    - batch: Dict with 'urls' list and 'batch_index'
+    - zone_type: Zone type (municipios, distritos, etc.)
+    - max_parallel: Max parallel downloads (default: 4)
+    - threads: Number of threads for DuckDB processing (default: 4)
+    - **context: Airflow context
+    """
+    from bronze.utils import download_batch_to_rustfs, copy_batch_to_table, delete_batch_from_rustfs
+    
+    dataset = 'od'
+    table_name = f'mitma_{dataset}_{zone_type}'
+    urls = batch.get('urls', [])
+    batch_index = batch.get('batch_index', 0)
+    
+    if not urls:
         return {
             'batch_index': batch_index,
             'status': 'skipped',
+            'downloaded': 0,
             'processed': 0
         }
     
-    table_name = f'mitma_{dataset}_{zone_type}'
-    processed = 0
-    errors = []
+    print(f"[TASK_V4] Downloading and processing batch {batch_index}: {len(urls)} URLs")
     
-    print(f"[TASK_V2] Processing batch {batch_index}: {len(downloaded)} files")
+    # Step 1: Download batch to RustFS
+    print(f"[TASK_V4] Step 1: Downloading {len(urls)} URLs to RustFS...")
+    download_results = download_batch_to_rustfs(urls, dataset, zone_type, max_parallel)
     
-    for item in downloaded:
-        try:
-            merge_csv_or_cloud_run(
-                table_name=table_name,
-                url=item['s3_path'],
-                original_url=item['original_url']
-            )
-            processed += 1
-        except Exception as e:
-            print(f"[TASK_V2] Error: {e}")
-            errors.append({'s3_path': item['s3_path'], 'error': str(e)})
+    downloaded = [
+        {'original_url': url, 's3_path': s3_path}
+        for url, s3_path in download_results.items()
+    ]
+    
+    if not downloaded:
+        print(f"[TASK_V4] No files downloaded successfully for batch {batch_index}")
+        return {
+            'batch_index': batch_index,
+            'status': 'failed',
+            'downloaded': 0,
+            'processed': 0,
+            'errors': ['No files downloaded']
+        }
+    
+    print(f"[TASK_V4] Step 1 complete: {len(downloaded)} files downloaded to RustFS")
+    
+    # Step 2: Process batch using executor (Cloud Run)
+    print(f"[TASK_V4] Step 2: Processing {len(downloaded)} files using executor...")
+    s3_paths = [item['s3_path'] for item in downloaded]
+    original_urls = [item['original_url'] for item in downloaded]
+    
+    process_result = copy_batch_to_table(
+        table_name=table_name,
+        s3_paths=s3_paths,
+        original_urls=original_urls,
+        threads=threads,
+        fecha_as_timestamp=True,
+        **context
+    )
+    
+    processed_count = process_result.get('success', 0)
+    print(f"[TASK_V4] Step 2 complete: {processed_count} files processed successfully")
+    
+    # Step 3: Clean up RustFS files after successful processing
+    if processed_count > 0:
+        print(f"[TASK_V4] Step 3: Cleaning up {processed_count} processed files from RustFS...")
+        delete_results = delete_batch_from_rustfs(s3_paths)
+        deleted_count = sum(1 for v in delete_results.values() if v)
+        print(f"[TASK_V4] Step 3 complete: {deleted_count} files deleted from RustFS")
+    else:
+        print(f"[TASK_V4] Step 3 skipped: No files processed successfully, keeping files in RustFS")
     
     return {
         'batch_index': batch_index,
-        'status': 'success' if not errors else 'partial',
-        'processed': processed,
-        'errors': errors
+        'status': 'success' if process_result.get('failed', 0) == 0 else 'partial',
+        'downloaded': len(downloaded),
+        'processed': processed_count,
+        'failed': process_result.get('failed', 0),
+        'errors': process_result.get('errors', [])
     }
 
 

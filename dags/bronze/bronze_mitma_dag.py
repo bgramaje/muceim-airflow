@@ -21,6 +21,11 @@ from bronze.tasks.mitma import (
     BRONZE_mitma_od_create_table,
     BRONZE_mitma_od_filter_urls,
     BRONZE_mitma_od_process,
+    BRONZE_mitma_od_create_url_batches,
+    BRONZE_mitma_od_create_partitioned_table,
+    BRONZE_mitma_od_download_batch,
+    BRONZE_mitma_od_process_batch,
+    BRONZE_mitma_od_download_and_process_batch,
     BRONZE_mitma_people_day_urls,
     BRONZE_mitma_people_day_create_table,
     BRONZE_mitma_people_day_filter_urls,
@@ -61,7 +66,7 @@ def create_tg_od(zone_type: str):
         def check_urls_to_process(filtered_urls: list[str], **context):
             """Check if there are URLs to process."""
             if len(filtered_urls) > 0:
-                return f"{group_id}.od_create"
+                return f"{group_id}.od_create_table"
             else:
                 return f"{group_id}.od_skipped"
 
@@ -69,22 +74,38 @@ def create_tg_od(zone_type: str):
             task_id="check_urls"
         )(od_filtered_urls)
 
-        od_create = BRONZE_mitma_od_create_table.override(
-            task_id="od_create",
+        # Create partitioned table with fecha as TIMESTAMP
+        od_create_table = BRONZE_mitma_od_create_partitioned_table.override(
+            task_id="od_create_table",
         )(
             urls=od_urls,
             zone_type=zone_type,
         )
-       
-        od_process = (
-            BRONZE_mitma_od_process.override(
-                task_id="od_process",
-                pool="default_pool", 
-                # max_active_tis_per_dag=1,
-                # pool_slots=default_pool_slots,
+        
+        # Create URL batches using batch_size parameter from DAG params
+        @task
+        def create_batches(filtered_urls: list[str], **context):
+            """Create batches from filtered URLs using batch_size parameter."""
+            batch_size = context['params'].get('batch_size', 10)
+            from bronze.utils import create_url_batches
+            batches = create_url_batches(filtered_urls, batch_size)
+            return [
+                {'batch_index': i, 'urls': batch}
+                for i, batch in enumerate(batches)
+            ]
+        
+        od_batches = create_batches.override(
+            task_id="od_create_batches"
+        )(od_filtered_urls)
+        
+        # Download and process batches in parallel (combines download + process for better efficiency)
+        od_download_and_process = (
+            BRONZE_mitma_od_download_and_process_batch.override(
+                task_id="od_download_and_process",
+                pool="default_pool",
             )
             .partial(zone_type=zone_type)
-            .expand(url=od_filtered_urls)
+            .expand(batch=od_batches)
         )
 
         od_skipped = EmptyOperator(
@@ -93,12 +114,12 @@ def create_tg_od(zone_type: str):
 
         od_urls >> od_filtered_urls >> branch_task
 
-        branch_task >> od_create >> od_process
+        branch_task >> od_create_table >> od_batches >> od_download_and_process
         branch_task >> od_skipped
         
         return SimpleNamespace(
             start=od_urls,
-            insert=[od_process, od_skipped],
+            insert=[od_download_and_process, od_skipped],
         )
     
     return tg_od(zone_type=zone_type)
@@ -301,8 +322,9 @@ with DAG(
     catchup=False,
     tags=["bronze", "mitma", "data-ingestion"],
     params={
-        "start": Param(type="string", description="Start date for MITMA data loading (YYYY-MM-DD)"),
-        "end": Param(type="string", description="End date for MITMA data loading (YYYY-MM-DD)"),
+        "start": Param(type="string", schema={"type": "string", "format": "date"}, description="Start date for MITMA data loading"),
+        "end": Param(type="string", schema={"type": "string", "format": "date"}, description="End date for MITMA data loading"),
+        "batch_size": Param(type="integer", default=10, description="Number of URLs per batch for processing"),
         "enable_people_day": Param(type="boolean", default=False, description="Enable People Day data insertion"),
         "enable_overnight": Param(type="boolean", default=False, description="Enable Overnight Stay data insertion"),
     },

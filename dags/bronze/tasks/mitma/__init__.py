@@ -9,6 +9,7 @@ from .mitma_od import (
     BRONZE_mitma_od_create_partitioned_table,
     BRONZE_mitma_od_download_batch,
     BRONZE_mitma_od_process_batch,
+    BRONZE_mitma_od_download_and_process_batch,
     BRONZE_mitma_od_cleanup_batch,
     BRONZE_mitma_od_finalize,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "BRONZE_mitma_od_create_partitioned_table",
     "BRONZE_mitma_od_download_batch",
     "BRONZE_mitma_od_process_batch",
+    "BRONZE_mitma_od_download_and_process_batch",
     "BRONZE_mitma_od_cleanup_batch",
     "BRONZE_mitma_od_finalize",
     # People Day tasks
