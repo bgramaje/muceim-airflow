@@ -245,17 +245,34 @@ def download_batch_to_rustfs(
     
     print(f"[BATCH_DOWNLOAD] Starting parallel download of {len(urls)} URLs (max_parallel={max_parallel})")
     
+    # Timeout per download: DOWNLOAD_TIMEOUT + 60 seconds buffer for S3 upload
+    per_download_timeout = DOWNLOAD_TIMEOUT + 60
+    
     with ThreadPoolExecutor(max_workers=max_parallel) as executor:
         futures = {executor.submit(download_single, url): url for url in urls}
         
         for i, future in enumerate(as_completed(futures), 1):
-            url, s3_path, error = future.result()
-            if error:
-                print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Failed: {os.path.basename(url)} - {error}")
-                failed.append((url, error))
-            else:
-                results[url] = s3_path
-                print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Success: {os.path.basename(url)}")
+            try:
+                # Add timeout to prevent hanging - each download should complete within per_download_timeout
+                url, s3_path, error = future.result(timeout=per_download_timeout)
+                if error:
+                    print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Failed: {os.path.basename(url)} - {error}")
+                    failed.append((url, error))
+                else:
+                    results[url] = s3_path
+                    print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Success: {os.path.basename(url)}")
+            except TimeoutError:
+                url = futures[future]
+                error_msg = f"Download timeout after {per_download_timeout}s"
+                print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Timeout: {os.path.basename(url)} - {error_msg}")
+                failed.append((url, error_msg))
+                # Cancel the future if possible
+                future.cancel()
+            except Exception as e:
+                url = futures.get(future, "unknown")
+                error_msg = f"Unexpected error: {str(e)}"
+                print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Error: {os.path.basename(url) if url != 'unknown' else url} - {error_msg}")
+                failed.append((url, error_msg))
     
     print(f"[BATCH_DOWNLOAD] Completed: {len(results)} success, {len(failed)} failed")
     
@@ -459,9 +476,11 @@ def create_partitioned_table_from_csv(
                     # Column might already be TIMESTAMP or table might not exist yet
                     print(f"[CREATE_TABLE_V3] Note: Could not alter fecha type (may already be TIMESTAMP): {e}")
                 
+                # Partition by year/month/day of fecha (TIMESTAMP) - same approach as silver
+                # This works correctly when fecha is TIMESTAMP (no CAST needed in partition definition)
                 partition_sql = f"""
                     ALTER TABLE {full_table_name} 
-                    SET PARTITIONED BY (year(CAST(fecha AS TIMESTAMP)), month(CAST(fecha AS TIMESTAMP)), day(CAST(fecha AS TIMESTAMP)));
+                    SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));
                 """
             else:
                 partition_sql = f"""
@@ -547,14 +566,14 @@ def create_url_batches(urls: List[str], batch_size: int = 10) -> List[List[str]]
 # ============================================================================
 def copy_batch_to_table(
     table_name: str,
-    s3_paths: List[str],
-    original_urls: Optional[List[str]] = None,
+    urls: List[str],
     threads: int = 4,
     fecha_as_timestamp: bool = False,
     **context
 ) -> Dict[str, Any]:
     """
-    V3: Efficiently copies a batch of CSV files from RustFS to DuckDB table using INSERT INTO.
+    V4: Efficiently copies a batch of CSV files directly from HTTP URLs to DuckDB table using INSERT INTO.
+    DuckDB with httpfs can read directly from HTTP URLs without downloading.
     Builds complete SQL query and uses executor (Cloud Run) instead of ingestor.
     Uses multiple threads internally and read_csv with multiple URLs for faster processing.
     
@@ -563,8 +582,7 @@ def copy_batch_to_table(
     
     Parameters:
     - table_name: Full table name (with 'bronze_' prefix)
-    - s3_paths: List of S3 paths to copy from RustFS
-    - original_urls: Optional list of original URLs for logging (must match s3_paths order)
+    - urls: List of HTTP URLs to read directly (DuckDB with httpfs reads directly from HTTP)
     - threads: Number of threads to use for DuckDB internal parallelization
     - fecha_as_timestamp: If True, parses fecha from VARCHAR to TIMESTAMP
     - **context: Airflow context for execute_sql_or_cloud_run
@@ -576,29 +594,22 @@ def copy_batch_to_table(
     
     full_table_name = table_name if table_name.startswith('bronze_') else f'bronze_{table_name}'
     
-    if not s3_paths:
+    if not urls:
         return {'success': 0, 'failed': 0, 'errors': []}
     
-    if original_urls is None:
-        original_urls = s3_paths
-    
-    if len(original_urls) != len(s3_paths):
-        raise ValueError("original_urls must have the same length as s3_paths")
-    
-    print(f"[COPY_BATCH] Processing {len(s3_paths)} files into {full_table_name} with {threads} threads using executor")
+    print(f"[COPY_BATCH] Processing {len(urls)} URLs directly into {full_table_name} with {threads} threads using executor")
     if fecha_as_timestamp:
         print(f"[COPY_BATCH] Will parse fecha to TIMESTAMP")
     
     start_time = time.time()
     
     # Build SQL query - use read_csv with multiple URLs for faster processing
-    # DuckDB can process multiple URLs in parallel
+    # DuckDB with httpfs can read directly from HTTP URLs
     # We'll use UNION ALL to ensure proper source_file mapping
     union_parts = []
-    for s3_path, orig_url in zip(s3_paths, original_urls):
-        source_file_value = orig_url if orig_url else s3_path
-        source_file_value_escaped = source_file_value.replace("'", "''")
-        s3_path_escaped = s3_path.replace("'", "''")
+    for url in urls:
+        source_file_value_escaped = url.replace("'", "''")
+        url_escaped = url.replace("'", "''")
         
         if fecha_as_timestamp:
             union_parts.append(f"""
@@ -608,7 +619,7 @@ def copy_batch_to_table(
                     CURRENT_TIMESTAMP AS loaded_at,
                     '{source_file_value_escaped}' AS source_file
                 FROM read_csv(
-                    '{s3_path_escaped}',
+                    '{url_escaped}',
                     filename = true,
                     header = true,
                     all_varchar = true
@@ -621,7 +632,7 @@ def copy_batch_to_table(
                     CURRENT_TIMESTAMP AS loaded_at,
                     '{source_file_value_escaped}' AS source_file
                 FROM read_csv(
-                    '{s3_path_escaped}',
+                    '{url_escaped}',
                     filename = true,
                     header = true,
                     all_varchar = true

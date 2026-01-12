@@ -183,23 +183,21 @@ def BRONZE_mitma_od_process_batch(
 def BRONZE_mitma_od_download_and_process_batch(
     batch: Dict[str, Any],
     zone_type: str = 'municipios',
-    max_parallel: int = 4,
     threads: int = 4,
     **context
 ) -> Dict[str, Any]:
     """
-    V4: Combines download and process in a single task for better pipeline efficiency.
-    Downloads batch to RustFS, immediately processes it using executor (Cloud Run), and cleans up.
-    This allows processing to start as soon as each batch is downloaded, instead of waiting for all downloads.
+    V5: Processes batch directly from HTTP URLs without downloading.
+    DuckDB with httpfs can read directly from HTTP URLs, eliminating the download step.
+    This is more efficient: faster, less storage, less code.
     
     Parameters:
     - batch: Dict with 'urls' list and 'batch_index'
     - zone_type: Zone type (municipios, distritos, etc.)
-    - max_parallel: Max parallel downloads (default: 4)
     - threads: Number of threads for DuckDB processing (default: 4)
     - **context: Airflow context
     """
-    from bronze.utils import download_batch_to_rustfs, copy_batch_to_table, delete_batch_from_rustfs
+    from bronze.utils import copy_batch_to_table
     
     dataset = 'od'
     table_name = f'mitma_{dataset}_{zone_type}'
@@ -210,66 +208,145 @@ def BRONZE_mitma_od_download_and_process_batch(
         return {
             'batch_index': batch_index,
             'status': 'skipped',
-            'downloaded': 0,
             'processed': 0
         }
     
-    print(f"[TASK_V4] Downloading and processing batch {batch_index}: {len(urls)} URLs")
+    print(f"[TASK_V5] Processing batch {batch_index}: {len(urls)} URLs directly from HTTP (no download)")
     
-    # Step 1: Download batch to RustFS
-    print(f"[TASK_V4] Step 1: Downloading {len(urls)} URLs to RustFS...")
-    download_results = download_batch_to_rustfs(urls, dataset, zone_type, max_parallel)
-    
-    downloaded = [
-        {'original_url': url, 's3_path': s3_path}
-        for url, s3_path in download_results.items()
-    ]
-    
-    if not downloaded:
-        print(f"[TASK_V4] No files downloaded successfully for batch {batch_index}")
-        return {
-            'batch_index': batch_index,
-            'status': 'failed',
-            'downloaded': 0,
-            'processed': 0,
-            'errors': ['No files downloaded']
-        }
-    
-    print(f"[TASK_V4] Step 1 complete: {len(downloaded)} files downloaded to RustFS")
-    
-    # Step 2: Process batch using executor (Cloud Run)
-    print(f"[TASK_V4] Step 2: Processing {len(downloaded)} files using executor...")
-    s3_paths = [item['s3_path'] for item in downloaded]
-    original_urls = [item['original_url'] for item in downloaded]
-    
+    # Process batch directly from HTTP URLs using executor (Cloud Run)
+    # DuckDB with httpfs reads directly from HTTP URLs
     process_result = copy_batch_to_table(
         table_name=table_name,
-        s3_paths=s3_paths,
-        original_urls=original_urls,
+        urls=urls,
         threads=threads,
         fecha_as_timestamp=True,
         **context
     )
     
     processed_count = process_result.get('success', 0)
-    print(f"[TASK_V4] Step 2 complete: {processed_count} files processed successfully")
-    
-    # Step 3: Clean up RustFS files after successful processing
-    if processed_count > 0:
-        print(f"[TASK_V4] Step 3: Cleaning up {processed_count} processed files from RustFS...")
-        delete_results = delete_batch_from_rustfs(s3_paths)
-        deleted_count = sum(1 for v in delete_results.values() if v)
-        print(f"[TASK_V4] Step 3 complete: {deleted_count} files deleted from RustFS")
-    else:
-        print(f"[TASK_V4] Step 3 skipped: No files processed successfully, keeping files in RustFS")
+    print(f"[TASK_V5] Batch {batch_index} complete: {processed_count} URLs processed successfully")
     
     return {
         'batch_index': batch_index,
         'status': 'success' if process_result.get('failed', 0) == 0 else 'partial',
-        'downloaded': len(downloaded),
         'processed': processed_count,
         'failed': process_result.get('failed', 0),
         'errors': process_result.get('errors', [])
+    }
+
+
+@task
+def BRONZE_mitma_od_download_all_batches_then_process(
+    batches: List[Dict[str, Any]],
+    zone_type: str = 'municipios',
+    threads: int = 4,
+    batch_size: int = 10,
+    **context
+) -> Dict[str, Any]:
+    """
+    V6: Descarga todos los batches secuencialmente (uno después de otro),
+    y luego ejecuta Cloud Run por batches configurable para procesar los archivos descargados.
+    
+    Parameters:
+    - batches: Lista de diccionarios con 'urls' y 'batch_index'
+    - zone_type: Zone type (municipios, distritos, etc.)
+    - threads: Number of threads for DuckDB processing (default: 4)
+    - batch_size: Número de archivos a procesar por batch en Cloud Run (default: 10)
+    - **context: Airflow context
+    """
+    from bronze.utils import download_batch_to_rustfs, copy_from_csv_batch
+    
+    dataset = 'od'
+    table_name = f'mitma_{dataset}_{zone_type}'
+    
+    if not batches:
+        return {
+            'status': 'skipped',
+            'processed': 0,
+            'downloaded': 0
+        }
+    
+    print(f"[TASK_V6] Downloading {len(batches)} batches sequentially")
+    
+    # 1. Descargar todos los batches secuencialmente
+    all_downloaded = []
+    
+    for batch_idx, batch in enumerate(batches):
+        urls = batch.get('urls', [])
+        batch_index = batch.get('batch_index', batch_idx)
+        
+        if not urls:
+            print(f"[TASK_V6] Batch {batch_index} is empty, skipping")
+            continue
+        
+        print(f"[TASK_V6] Downloading batch {batch_index}: {len(urls)} URLs")
+        
+        # Descargar batch secuencialmente (sin paralelismo entre batches)
+        # download_batch_to_rustfs usa paralelismo interno dentro del batch
+        results = download_batch_to_rustfs(urls, dataset, zone_type, max_parallel=4)
+        
+        # Acumular resultados
+        for url, s3_path in results.items():
+            all_downloaded.append({'original_url': url, 's3_path': s3_path})
+        
+        print(f"[TASK_V6] Batch {batch_index} downloaded: {len(results)}/{len(urls)} URLs")
+    
+    print(f"[TASK_V6] All batches downloaded: {len(all_downloaded)} total files")
+    
+    if not all_downloaded:
+        return {
+            'status': 'skipped',
+            'processed': 0,
+            'downloaded': 0
+        }
+    
+    # 2. Procesar archivos descargados con Cloud Run por batches
+    print(f"[TASK_V6] Processing {len(all_downloaded)} files with Cloud Run (batch_size={batch_size})")
+    
+    total_processed = 0
+    total_failed = 0
+    all_errors = []
+    
+    # Dividir archivos descargados en batches para procesar
+    for i in range(0, len(all_downloaded), batch_size):
+        process_batch = all_downloaded[i:i + batch_size]
+        process_batch_index = i // batch_size
+        
+        print(f"[TASK_V6] Processing Cloud Run batch {process_batch_index}: {len(process_batch)} files")
+        
+        # Crear batch para usar copy_from_csv_batch
+        cloud_run_batch = {
+            'batch_index': process_batch_index,
+            'downloaded': process_batch
+        }
+        
+        # Ejecutar Cloud Run para este batch
+        process_result = copy_from_csv_batch(
+            table_name=table_name,
+            batch=cloud_run_batch,
+            threads=threads,
+            fecha_as_timestamp=True,
+            **context
+        )
+        
+        processed_count = process_result.get('processed', 0)
+        failed_count = process_result.get('failed', 0)
+        errors = process_result.get('errors', [])
+        
+        total_processed += processed_count
+        total_failed += failed_count
+        all_errors.extend(errors)
+        
+        print(f"[TASK_V6] Cloud Run batch {process_batch_index} complete: {processed_count} processed, {failed_count} failed")
+    
+    print(f"[TASK_V6] All processing complete: {total_processed}/{len(all_downloaded)} files processed successfully")
+    
+    return {
+        'status': 'success' if total_failed == 0 else 'partial',
+        'downloaded': len(all_downloaded),
+        'processed': total_processed,
+        'failed': total_failed,
+        'errors': all_errors
     }
 
 
@@ -399,4 +476,88 @@ def BRONZE_mitma_od_process(url: str, zone_type: str = 'distritos'):
         'cloud_run_job_result': result,
         'table_name': table_name,
         'file_deleted': delete_success
+    }
+
+
+@task
+def BRONZE_mitma_od_check_dates(
+    zone_type: str = 'municipios',
+    start_date: str = None,
+    end_date: str = None,
+    **context
+) -> Dict[str, Any]:
+    """
+    Comprueba las fechas insertadas en bronze haciendo un SELECT DISTINCT
+    sobre la fecha, filtrando en el rango entre start_date y end_date.
+    Calcula las fechas faltantes y genera las URLs solo para esas fechas.
+    """
+    from utils.utils import get_ducklake_connection
+    from bronze.utils import get_mitma_urls
+    import re
+    
+    table_name = f'bronze_mitma_od_{zone_type}'
+    
+    # Si start_date y end_date vienen de params, usarlos
+    if not start_date:
+        start_date = context.get('params', {}).get('start')
+    if not end_date:
+        end_date = context.get('params', {}).get('end')
+    
+    if not start_date or not end_date:
+        print("[TASK] start_date y end_date son requeridos")
+        return {'fechas_bronze': [], 'fechas_faltantes': [], 'urls_faltantes': []}
+    
+    print(f"[TASK] Checking dates in {table_name} from {start_date} to {end_date}")
+    
+    # Convertir fechas al formato YYYYMMDD para la comparación
+    start_date_yyyymmdd = start_date.replace('-', '')
+    end_date_yyyymmdd = end_date.replace('-', '')
+    
+    # 1. Obtener fechas insertadas en bronze en el rango
+    sql_query = f"""
+        SELECT DISTINCT 
+            CAST(fecha AS VARCHAR) as fecha
+        FROM {table_name}
+        WHERE fecha IS NOT NULL
+            AND CAST(fecha AS VARCHAR) >= '{start_date_yyyymmdd}'
+            AND CAST(fecha AS VARCHAR) <= '{end_date_yyyymmdd}'
+        ORDER BY fecha
+    """
+    
+    con = get_ducklake_connection()
+    df_bronze = con.execute(sql_query).fetchdf()
+    
+    fechas_bronze = [str(fecha) for fecha in df_bronze['fecha'].unique()] if not df_bronze.empty else []
+    fechas_bronze_set = set(fechas_bronze)
+    print(f"[TASK] Fechas insertadas en bronze en el rango: {len(fechas_bronze)}")
+    
+    # 2. Obtener todas las URLs disponibles y extraer fechas
+    dataset = 'od'
+    urls_disponibles = get_mitma_urls(dataset, zone_type, start_date, end_date)
+    
+    # Crear diccionario fecha -> URL para poder filtrar después
+    pattern = r'(\d{8})'
+    fecha_to_url = {}
+    for url in urls_disponibles:
+        match = re.search(pattern, url)
+        if match:
+            fecha_str = match.group(1)
+            if start_date_yyyymmdd <= fecha_str <= end_date_yyyymmdd:
+                fecha_to_url[fecha_str] = url
+    
+    fechas_disponibles_set = set(fecha_to_url.keys())
+    print(f"[TASK] Fechas disponibles según URLs: {len(fechas_disponibles_set)}")
+    
+    # 3. Calcular fechas faltantes (disponibles pero no en bronze)
+    fechas_faltantes = sorted(list(fechas_disponibles_set - fechas_bronze_set))
+    print(f"[TASK] Fechas faltantes por ingestar: {len(fechas_faltantes)}")
+    
+    # 4. Generar URLs solo para las fechas faltantes
+    urls_faltantes = [fecha_to_url[fecha] for fecha in fechas_faltantes if fecha in fecha_to_url]
+    print(f"[TASK] URLs para fechas faltantes: {len(urls_faltantes)}")
+    
+    return {
+        'fechas_bronze': fechas_bronze,
+        'fechas_faltantes': fechas_faltantes,
+        'urls_faltantes': urls_faltantes
     }

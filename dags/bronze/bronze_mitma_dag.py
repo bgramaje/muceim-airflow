@@ -98,7 +98,7 @@ def create_tg_od(zone_type: str):
             task_id="od_create_batches"
         )(od_filtered_urls)
         
-        # Download and process batches in parallel (combines download + process for better efficiency)
+        # Process batches in parallel directly from HTTP URLs (no download step)
         od_download_and_process = (
             BRONZE_mitma_od_download_and_process_batch.override(
                 task_id="od_download_and_process",
