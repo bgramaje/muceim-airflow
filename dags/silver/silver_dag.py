@@ -7,8 +7,9 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.datasets import Dataset
+from airflow.models import Param
 from airflow.providers.standard.operators.empty import EmptyOperator
-from airflow.sdk import TaskGroup
+from airflow.sdk import TaskGroup, task
 
 from silver.mitma import (
     SILVER_mitma_zonification,
@@ -36,7 +37,7 @@ OD_POOL_NAME = "od_pool"
 OD_POOL_SLOTS = 15
 
 
-def create_mitma_od_batches_group(dag: DAG):
+def create_mitma_od_batches_group(dag: DAG, start_date: str = None, end_date: str = None, batch_size: int = 7):
     """Crea el TaskGroup para procesamiento de MITMA OD por batches."""
     with TaskGroup(group_id="mitma_od_batches", dag=dag) as od_group:
         od_create_table = SILVER_mitma_od_create_table.override(
@@ -45,7 +46,11 @@ def create_mitma_od_batches_group(dag: DAG):
         
         od_date_batches = SILVER_mitma_od_get_date_batches.override(
             task_id="get_batches"
-        )(batch_size=7)
+        )(
+            batch_size=batch_size,
+            start_date=start_date,
+            end_date=end_date,
+        )
         
         od_check_batches = SILVER_mitma_od_check_batches.override(
             task_id="check_batches"
@@ -99,36 +104,76 @@ def create_od_quality_batches_group(dag: DAG):
     return od_quality_group, od_quality_create_table
 
 
-def create_people_day_group(dag: DAG):
+def create_people_day_group(dag: DAG, start_date: str = None, end_date: str = None):
     """Crea el TaskGroup para procesamiento de People Day."""
     with TaskGroup(group_id="people_day", dag=dag) as people_day_group:
+        
+        @task.branch
+        def check_people_day_enabled(**context):
+            """Check if people_day processing is enabled via params."""
+            enabled = context['params'].get('enable_people_day', False)
+            if enabled:
+                print("[TASK] People Day processing is enabled")
+                return "people_day.create_table"
+            else:
+                print("[TASK] People Day processing is disabled")
+                return "people_day.skipped"
+        
+        check_enabled = check_people_day_enabled.override(
+            task_id="check_enabled"
+        )()
+        
         create_table = SILVER_mitma_people_day_create_table.override(
             task_id="create_table"
         )()
         
         insert_data = SILVER_mitma_people_day_insert.override(
             task_id="insert_data"
-        )()
+        )(start_date=start_date, end_date=end_date)
         
-        create_table >> insert_data
+        skipped = EmptyOperator(task_id="skipped")
+        done = EmptyOperator(task_id="done", trigger_rule="none_failed")
+        
+        check_enabled >> create_table >> insert_data >> done
+        check_enabled >> skipped >> done
     
-    return people_day_group, insert_data
+    return people_day_group, done
 
 
-def create_overnight_stay_group(dag: DAG):
+def create_overnight_stay_group(dag: DAG, start_date: str = None, end_date: str = None):
     """Crea el TaskGroup para procesamiento de Overnight Stay."""
     with TaskGroup(group_id="overnight_stay", dag=dag) as overnight_group:
+        
+        @task.branch
+        def check_overnight_enabled(**context):
+            """Check if overnight processing is enabled via params."""
+            enabled = context['params'].get('enable_overnight', False)
+            if enabled:
+                print("[TASK] Overnight Stay processing is enabled")
+                return "overnight_stay.create_table"
+            else:
+                print("[TASK] Overnight Stay processing is disabled")
+                return "overnight_stay.skipped"
+        
+        check_enabled = check_overnight_enabled.override(
+            task_id="check_enabled"
+        )()
+        
         create_table = SILVER_mitma_overnight_stay_create_table.override(
             task_id="create_table"
         )()
         
         insert_data = SILVER_mitma_overnight_stay_insert.override(
             task_id="insert_data"
-        )()
+        )(start_date=start_date, end_date=end_date)
         
-        create_table >> insert_data
+        skipped = EmptyOperator(task_id="skipped")
+        done = EmptyOperator(task_id="done", trigger_rule="none_failed")
+        
+        check_enabled >> create_table >> insert_data >> done
+        check_enabled >> skipped >> done
     
-    return overnight_group, insert_data
+    return overnight_group, done
 
 
 with DAG(
@@ -142,6 +187,35 @@ with DAG(
     catchup=False,
     tags=["silver", "data-transformation"],
     description="Silver layer data transformation - automatically triggered when all Bronze DAGs complete",
+    params={
+        "start": Param(
+            type=["string", "null"], 
+            default=None,
+            schema={"type": ["string", "null"], "format": "date"}, 
+            description="Fecha inicio para filtrar datos MITMA (formato: YYYY-MM-DD). Si no se especifica, procesa todas las fechas no procesadas."
+        ),
+        "end": Param(
+            type=["string", "null"], 
+            default=None,
+            schema={"type": ["string", "null"], "format": "date"}, 
+            description="Fecha fin para filtrar datos MITMA (formato: YYYY-MM-DD). Si no se especifica, procesa todas las fechas no procesadas."
+        ),
+        "enable_people_day": Param(
+            type="boolean", 
+            default=False, 
+            description="Habilitar procesamiento de People Day a Silver"
+        ),
+        "enable_overnight": Param(
+            type="boolean", 
+            default=False, 
+            description="Habilitar procesamiento de Overnight Stay a Silver"
+        ),
+        "batch_size_od": Param(
+            type="integer",
+            default=7,
+            description="Número de fechas a procesar por batch en MITMA OD (default: 7)"
+        ),
+    },
     default_args={
         "retries": 3,
         "retry_delay": timedelta(seconds=30),
@@ -152,13 +226,26 @@ with DAG(
     mitma_zonif = SILVER_mitma_zonification.override(task_id="zonification")()
     
     # MITMA People Day con TaskGroup (create table + insert)
-    people_day_group, people_day_done = create_people_day_group(dag)
+    people_day_group, people_day_done = create_people_day_group(
+        dag, 
+        start_date="{{ params.start }}", 
+        end_date="{{ params.end }}"
+    )
     
     # MITMA Overnight Stay con TaskGroup (create table + insert)
-    overnight_group, overnight_done = create_overnight_stay_group(dag)
+    overnight_group, overnight_done = create_overnight_stay_group(
+        dag, 
+        start_date="{{ params.start }}", 
+        end_date="{{ params.end }}"
+    )
     
     # MITMA OD con procesamiento por batches - TaskGroup
-    od_group, od_done = create_mitma_od_batches_group(dag)
+    od_group, od_done = create_mitma_od_batches_group(
+        dag, 
+        start_date="{{ params.start }}",
+        batch_size="{{ params.batch_size_od }}", 
+        end_date="{{ params.end }}"
+    )
     
     mitma_distances = SILVER_mitma_distances.override(task_id="distances")()
 

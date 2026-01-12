@@ -406,7 +406,7 @@ def BRONZE_mitma_od_finalize(
     
     print(f"[TASK_V2] Finalizing {table_name} ({total_processed} records processed)")
     
-    return finalize_table(table_name, run_analyze=True)
+    return finalize_table(table_name, run_analyze=False)
 
 
 @task

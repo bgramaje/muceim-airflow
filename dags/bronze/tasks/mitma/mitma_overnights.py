@@ -59,16 +59,4 @@ def BRONZE_mitma_overnight_stay_insert(url: str, zone_type: str = 'distritos'):
 
     merge_from_csv(table_name, url)
 
-    # Update statistics for query optimization (DuckDB alternative to indexes)
-    # ANALYZE helps the query optimizer make better decisions for:
-    # - Filtering on fecha, zona_pernoctacion, zona_residencia
-    # - JOIN operations
-    # - SELECT DISTINCT operations
-    con = get_ducklake_connection()
-    try:
-        con.execute(f"ANALYZE {full_table_name};")
-        print(f"  Updated statistics for {full_table_name} (query optimization)")
-    except Exception as analyze_error:
-        print(f"  Could not analyze table (non-critical): {analyze_error}")
-
     return {'status': 'success', 'url': url}

@@ -37,6 +37,7 @@ from bronze.tasks.mitma import (
     BRONZE_mitma_overnight_stay_insert,
     BRONZE_mitma_zonification_urls,
     BRONZE_mitma_zonification,
+    BRONZE_mitma_ine_relations,
 )
 
 default_pool_slots = get_default_pool_slots()
@@ -338,6 +339,28 @@ def create_tg_zonification(zone_type: str):
     return tg_zonification(zone_type=zone_type)
 
 
+def create_tg_ine_relations():
+    """Factory function to create MITMA-INE Relations TaskGroup."""
+    group_id = "ine_relations"
+    
+    @task_group(group_id=group_id)
+    def tg_ine_relations():
+        """TaskGroup for MITMA-INE Relations data ingestion.
+        Simplified: reads directly from URL (lightweight operation).
+        """
+        # Single task that reads directly from URL and creates table
+        relations_load = BRONZE_mitma_ine_relations.override(
+            task_id="relations_load",
+        )()
+        
+        return SimpleNamespace(
+            start=relations_load,
+            end=relations_load,
+        )
+    
+    return tg_ine_relations()
+
+
 with DAG(
     dag_id="bronze_mitma",
     start_date=datetime(2025, 12, 1),
@@ -351,7 +374,7 @@ with DAG(
         "enable_people_day": Param(type="boolean", default=False, description="Enable People Day data insertion"),
         "enable_overnight": Param(type="boolean", default=False, description="Enable Overnight Stay data insertion"),
     },
-    description="MITMA Bronze layer data ingestion (OD, People Day, Overnights, Zonification)",
+    description="MITMA Bronze layer data ingestion (OD, People Day, Overnights, Zonification, INE Relations)",
     default_args={
         "retries": 3,
         "retry_delay": timedelta(seconds=30),
@@ -366,8 +389,9 @@ with DAG(
     people_day_group = create_tg_people_day(zone_type=zone_type)
     overnight_group = create_tg_overnight(zone_type=zone_type)
     zonif_group = create_tg_zonification(zone_type=zone_type)
+    ine_relations_group = create_tg_ine_relations()
     
-    infra.bucket >> [od_group.start, people_day_group.start, overnight_group.start, zonif_group.start]
+    infra.bucket >> [od_group.start, people_day_group.start, overnight_group.start, zonif_group.start, ine_relations_group.start]
     
     bronze_mitma_asset = Dataset("bronze://mitma/done")
     
@@ -385,3 +409,4 @@ with DAG(
     od_group.insert[1] >> done          # skipped insert (if no URLs)
     zonif_group.insert[0] >> done       # zonification if URLs exist
     zonif_group.insert[1] >> done       # zonification skipped if no URLs
+    ine_relations_group.end >> done     # ine relations (single local task)

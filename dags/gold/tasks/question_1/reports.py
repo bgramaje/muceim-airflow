@@ -161,6 +161,8 @@ def GOLD_generate_typical_day_map(
     print("[TASK] Generating typical day map (Cloud Run)")
     
     sql_query = f"""
+        INSTALL spatial; LOAD spatial;
+        
         WITH od_base AS (
             SELECT
                 z1.nombre as origin,
@@ -297,6 +299,8 @@ def GOLD_generate_top_origins(
     print("[TASK] Generating typical day top origins (Cloud Run)")
     
     sql_query = f"""
+        INSTALL spatial; LOAD spatial;
+        
         WITH od_filtered AS (
             SELECT
                 z1.nombre AS origin,
@@ -467,6 +471,8 @@ def GOLD_generate_hourly_distribution(
     print("[TASK] Generating typical day hourly distribution (Cloud Run)")
     
     sql_query = f"""
+        INSTALL spatial; LOAD spatial;
+        
         WITH od_filtered AS (
             SELECT
                 z1.nombre AS municipality,

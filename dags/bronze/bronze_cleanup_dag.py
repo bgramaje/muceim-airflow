@@ -1,13 +1,14 @@
 """
-DAG for cleaning up MITMA Bronze layer data.
-Allows cleaning files from RustFS bucket and optionally truncating Bronze tables.
+DAG for cleaning up Bronze layer data.
+Allows cleaning files from RustFS bucket and optionally dropping Bronze tables.
 
 Usage:
     Trigger with parameters:
+    - source: Which source to clean ('mitma', 'ine', 'holidays')
     - cleanup_rustfs: If True, deletes files from RustFS bucket
-    - cleanup_tables: If True, truncates Bronze tables (use with caution!)
-    - dataset: Which dataset to clean ('all', 'od', 'people_day', 'overnight_stay')
-    - zone_type: Which zone type to clean ('all', 'municipios', 'distritos', 'gau')
+    - cleanup_tables: If True, drops Bronze tables (use with caution!)
+    - dataset: Which dataset to clean (options depend on source)
+    - zone_type: Which zone type to clean (only for MITMA)
     
 WARNING: This DAG will permanently delete files and/or table data!
 """
@@ -22,10 +23,40 @@ from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
 
 
+# ============================================================================
+# TABLE PATTERNS BY SOURCE
+# ============================================================================
+
+SOURCE_TABLE_PATTERNS = {
+    'mitma': {
+        'pattern': 'bronze_mitma%',
+        'datasets': ['all', 'od', 'people_day', 'overnight_stay', 'zonification', 'distances'],
+        'has_zone_types': True,
+        'zone_types': ['all', 'municipios', 'distritos', 'gau'],
+    },
+    'ine': {
+        'pattern': 'bronze_ine%',
+        'datasets': ['all', 'empresas', 'poblacion', 'renta', 'municipios'],
+        'has_zone_types': False,
+        'zone_types': ['all'],
+    },
+    'holidays': {
+        'pattern': 'bronze_holidays%',
+        'datasets': ['all'],
+        'has_zone_types': False,
+        'zone_types': ['all'],
+    },
+}
+
+
+# ============================================================================
+# TASK DEFINITIONS
+# ============================================================================
+
 @task
 def list_rustfs_files(**context) -> Dict[str, Any]:
     """
-    Lists files in RustFS bucket based on bronze_mitma* tables.
+    Lists files in RustFS bucket based on bronze tables for the selected source.
     For each table, searches for files in main/TABLE_NAME/ prefix.
     """
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
@@ -36,31 +67,38 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     
     # Get params from context
     params = context.get('params', {})
+    source = params.get('source', 'mitma')
     dataset = params.get('dataset', 'all')
     zone_type = params.get('zone_type', 'all')
     
-    print(f"[CLEANUP] Listing files in bucket '{rustfs_bucket}'")
+    source_config = SOURCE_TABLE_PATTERNS.get(source, SOURCE_TABLE_PATTERNS['mitma'])
+    table_pattern = source_config['pattern']
+    
+    print(f"[CLEANUP] Source: {source}")
+    print(f"[CLEANUP] Listing files in bucket '{rustfs_bucket}' for tables matching '{table_pattern}'")
     
     con = get_ducklake_connection()
     
-    # Get all bronze_mitma tables (bronze_mitma_loquesea)
-    tables_query = """
+    # Get all tables matching the pattern
+    tables_query = f"""
         SELECT table_name 
         FROM information_schema.tables 
-        WHERE table_name LIKE 'bronze_mitma_%'
-           OR table_name = 'bronze_mitma'
+        WHERE table_name LIKE '{table_pattern}'
         ORDER BY table_name
     """
     
     tables_df = con.execute(tables_query).fetchdf()
     table_names = tables_df['table_name'].tolist()
     
-    # Apply filters if needed
+    # Apply dataset filter if needed
     if dataset != 'all':
-        table_names = [t for t in table_names if f'_{dataset}_' in t or t.endswith(f'_{dataset}')]
+        table_names = [t for t in table_names if f'_{dataset}' in t]
     
-    if zone_type != 'all':
+    # Apply zone_type filter if applicable (only for MITMA)
+    if source_config.get('has_zone_types', False) and zone_type != 'all':
         table_names = [t for t in table_names if t.endswith(f'_{zone_type}')]
+    
+    print(f"[CLEANUP] Found {len(table_names)} matching tables: {table_names}")
     
     if not table_names:
         return {
@@ -68,7 +106,8 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
             'files': [],
             'total_count': 0,
             'total_size_mb': 0,
-            'tables': []
+            'tables': [],
+            'source': source
         }
     
     # Now list files for each table in main/TABLE_NAME/
@@ -82,7 +121,8 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
                 'files': [],
                 'total_count': 0,
                 'total_size_mb': 0,
-                'tables': table_names
+                'tables': table_names,
+                'source': source
             }
     except Exception as e:
         print(f"[CLEANUP] Error checking bucket: {e}")
@@ -92,6 +132,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
             'total_count': 0,
             'total_size_mb': 0,
             'tables': table_names,
+            'source': source,
             'error': str(e)
         }
     
@@ -160,7 +201,8 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
         'total_size_mb': round(total_size / (1024 * 1024), 2),
         'summary': summary,
         'tables': table_names,
-        'files_by_table': files_by_table
+        'files_by_table': files_by_table,
+        'source': source
     }
 
 
@@ -173,7 +215,7 @@ def delete_rustfs_files(
     """
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
     
-    # Get bucket name from Airflow Variable or file_info
+    # Get bucket name from Airflow Variable
     rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
     
     if file_info is None:
@@ -185,15 +227,17 @@ def delete_rustfs_files(
     files = file_info.get('files', [])
     total_count = file_info.get('total_count', 0)
     total_size_mb = file_info.get('total_size_mb', 0)
+    source = file_info.get('source', 'unknown')
     
     if not files:
         return {
             'status': 'skipped',
             'reason': 'no_files',
-            'deleted': 0
+            'deleted': 0,
+            'source': source
         }
     
-    print(f"[CLEANUP] Deleting {total_count} files ({total_size_mb} MB)")
+    print(f"[CLEANUP] Deleting {total_count} files ({total_size_mb} MB) for source '{source}'")
     
     s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
     s3_client = s3_hook.get_conn()
@@ -236,56 +280,67 @@ def delete_rustfs_files(
         'status': 'success' if not errors else 'partial',
         'deleted': deleted,
         'freed_mb': total_size_mb,
-        'errors': errors[:10] if errors else []
+        'errors': errors[:10] if errors else [],
+        'source': source
     }
 
 
 @task
 def list_bronze_tables(**context) -> Dict[str, Any]:
     """
-    Lists all bronze_mitma_* tables and their row counts.
+    Lists all bronze tables for the selected source and their row counts.
     """
     from utils.utils import get_ducklake_connection
     
     # Get params from context
     params = context.get('params', {})
+    source = params.get('source', 'mitma')
     dataset = params.get('dataset', 'all')
     zone_type = params.get('zone_type', 'all')
     
+    source_config = SOURCE_TABLE_PATTERNS.get(source, SOURCE_TABLE_PATTERNS['mitma'])
+    table_pattern = source_config['pattern']
+    
+    print(f"[CLEANUP] Source: {source}")
+    print(f"[CLEANUP] Listing tables matching '{table_pattern}'")
+    
     con = get_ducklake_connection()
     
-    # Get all bronze_mitma_* tables (bronze_mitma_loquesea)
-    tables_query = """
+    # Get all tables matching the pattern
+    tables_query = f"""
         SELECT table_name 
         FROM information_schema.tables 
-        WHERE table_name LIKE 'bronze_mitma_%'
-           OR table_name = 'bronze_mitma'
+        WHERE table_name LIKE '{table_pattern}'
         ORDER BY table_name
     """
     
     tables_df = con.execute(tables_query).fetchdf()
     table_names = tables_df['table_name'].tolist()
     
-    # Apply filters if needed
+    # Apply dataset filter if needed
     if dataset != 'all':
-        table_names = [t for t in table_names if f'_{dataset}_' in t or t.endswith(f'_{dataset}')]
+        table_names = [t for t in table_names if f'_{dataset}' in t]
     
-    if zone_type != 'all':
+    # Apply zone_type filter if applicable (only for MITMA)
+    if source_config.get('has_zone_types', False) and zone_type != 'all':
         table_names = [t for t in table_names if t.endswith(f'_{zone_type}')]
+    
+    print(f"[CLEANUP] Found {len(table_names)} matching tables: {table_names}")
     
     return {
         'tables': table_names,
-        'total_tables': len(table_names)
+        'total_tables': len(table_names),
+        'source': source
     }
 
 
 @task
-def truncate_bronze_tables(
+def drop_bronze_tables(
     table_info: Dict[str, Any] = None,
     **context
 ) -> Dict[str, Any]:
     """
-    Drops Bronze MITMA tables using a single SQL statement executed via Cloud Run.
+    Drops Bronze tables using a single SQL statement executed via Cloud Run.
     
     WARNING: This permanently deletes the tables completely (structure and data)!
     """
@@ -295,21 +350,24 @@ def truncate_bronze_tables(
         table_info = {}
     
     tables = table_info.get('tables', [])
+    source = table_info.get('source', 'unknown')
     
     if not tables:
         return {
             'status': 'skipped',
             'reason': 'no_tables',
-            'dropped': 0
+            'dropped': 0,
+            'source': source
         }
     
     # Build single SQL statement with all DROP TABLE statements
-    # list_bronze_tables returns a list of table name strings
     table_names = tables if isinstance(tables, list) else []
     drop_statements = [f"DROP TABLE IF EXISTS {table_name};" for table_name in table_names]
     sql_query = "\n".join(drop_statements)
     
-    print(f"[CLEANUP] ⚠️  DROPPING {len(table_names)} tables (complete deletion including structure)")
+    print(f"[CLEANUP] ⚠️  DROPPING {len(table_names)} {source} tables (complete deletion)")
+    for t in table_names:
+        print(f"[CLEANUP]   - {t}")
     
     try:
         # Execute all DROP TABLE statements in a single call via Cloud Run
@@ -320,8 +378,10 @@ def truncate_bronze_tables(
         return {
             'status': 'success',
             'dropped': len(table_names),
+            'tables_dropped': table_names,
             'execution_time_seconds': result.get('execution_time_seconds', 0),
-            'execution_name': result.get('execution_name', 'unknown')
+            'execution_name': result.get('execution_name', 'unknown'),
+            'source': source
         }
         
     except Exception as e:
@@ -329,7 +389,8 @@ def truncate_bronze_tables(
         return {
             'status': 'error',
             'dropped': 0,
-            'error': str(e)
+            'error': str(e),
+            'source': source
         }
 
 
@@ -338,12 +399,18 @@ def truncate_bronze_tables(
 # ============================================================================
 
 with DAG(
-    dag_id="bronze_mitma_cleanup",
+    dag_id="bronze_cleanup",
     start_date=datetime(2025, 12, 1),
     schedule=None,
     catchup=False,
-    tags=["bronze", "mitma", "cleanup", "maintenance"],
+    tags=["bronze", "cleanup", "maintenance"],
     params={
+        "source": Param(
+            type="string",
+            default="mitma",
+            enum=["mitma", "ine", "holidays"],
+            description="Which data source to clean (mitma, ine, holidays)"
+        ),
         "cleanup_rustfs": Param(
             type="boolean",
             default=True,
@@ -352,22 +419,22 @@ with DAG(
         "cleanup_tables": Param(
             type="boolean",
             default=False,
-            description="⚠️ Drop Bronze tables (DANGER: deletes tables completely including structure!)"
+            description="⚠️ Drop Bronze tables (DANGER: deletes tables completely!)"
         ),
         "dataset": Param(
             type="string",
             default="all",
-            enum=["all", "od", "people_day", "overnight_stay"],
-            description="Which dataset to clean"
+            enum=["all", "od", "people_day", "overnight_stay", "zonification", "distances", "empresas", "poblacion", "renta", "municipios"],
+            description="Which dataset to clean. 'all' cleans everything for the selected source. MITMA: od, people_day, overnight_stay, zonification, distances. INE: empresas, poblacion, renta, municipios"
         ),
         "zone_type": Param(
             type="string",
             default="all",
             enum=["all", "municipios", "distritos", "gau"],
-            description="Which zone type to clean"
+            description="Which zone type to clean (only applicable for MITMA source)"
         ),
     },
-    description="Cleanup DAG for MITMA Bronze layer - RustFS files and tables (DROP TABLE removes tables completely)",
+    description="Cleanup DAG for Bronze layer - supports MITMA, INE, and Holidays sources",
     default_args={
         "retries": 1,
         "retry_delay": timedelta(seconds=30),
@@ -412,13 +479,13 @@ with DAG(
         
         list_tables = list_bronze_tables.override(task_id="list_tables")()
         
-        truncate_tables = truncate_bronze_tables.override(task_id="truncate_tables")(
+        drop_tables = drop_bronze_tables.override(task_id="drop_tables")(
             table_info=list_tables
         )
         
         skipped = EmptyOperator(task_id="skipped")
         
-        branch >> list_tables >> truncate_tables
+        branch >> list_tables >> drop_tables
         branch >> skipped
     
     rustfs_group = rustfs_cleanup_group()
@@ -433,4 +500,3 @@ with DAG(
     start >> [rustfs_group, tables_group]
     rustfs_group >> done
     tables_group >> done
-

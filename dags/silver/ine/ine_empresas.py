@@ -30,7 +30,7 @@ def SILVER_ine_empresas():
                 COALESCE(CAST(data_item.Valor AS DOUBLE), 0) AS valor
             FROM bronze_ine_empresas_municipio e,
                 UNNEST(e.Data) AS t(data_item)
-            WHERE e.Nombre IS NOT NULL
+            WHERE e.Nombre IS NOT NULL AND e.Nombre ILIKE '%CNAE%'
         ), 
         empresas_mitma AS (
             SELECT 

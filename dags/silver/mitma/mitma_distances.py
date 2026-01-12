@@ -19,6 +19,7 @@ def SILVER_mitma_distances(**context):
     print("[TASK] Building silver_mitma_distances table using Cloud Run")
 
     sql_query = """
+        INSTALL spatial;
         LOAD spatial;
         CREATE OR REPLACE TABLE silver_mitma_distances AS
         SELECT

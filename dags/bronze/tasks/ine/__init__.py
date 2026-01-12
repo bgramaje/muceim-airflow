@@ -22,12 +22,6 @@ from .ine_renta import (
     BRONZE_ine_renta_filter_urls,
     BRONZE_ine_renta_insert,
 )
-from .mitma_ine_relations import (
-    BRONZE_mitma_ine_relations_urls,
-    BRONZE_mitma_ine_relations_create_table,
-    BRONZE_mitma_ine_relations_filter_urls,
-    BRONZE_mitma_ine_relations_insert,
-)
 
 __all__ = [
     "BRONZE_ine_municipios_urls",
@@ -46,8 +40,4 @@ __all__ = [
     "BRONZE_ine_renta_create_table",
     "BRONZE_ine_renta_filter_urls",
     "BRONZE_ine_renta_insert",
-    "BRONZE_mitma_ine_relations_urls",
-    "BRONZE_mitma_ine_relations_create_table",
-    "BRONZE_mitma_ine_relations_filter_urls",
-    "BRONZE_mitma_ine_relations_insert",
 ]

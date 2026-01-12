@@ -42,12 +42,7 @@ from .ine.ine_renta import (
     BRONZE_ine_renta_filter_urls,
     BRONZE_ine_renta_insert,
 )
-from .ine.mitma_ine_relations import (
-    BRONZE_mitma_ine_relations_urls,
-    BRONZE_mitma_ine_relations_create_table,
-    BRONZE_mitma_ine_relations_filter_urls,
-    BRONZE_mitma_ine_relations_insert,
-)
+from .mitma.mitma_ine_relations import BRONZE_mitma_ine_relations
 from .holidays.spanish_holidays import BRONZE_load_spanish_holidays
 
 __all__ = [
@@ -75,9 +70,6 @@ __all__ = [
     "BRONZE_ine_renta_create_table",
     "BRONZE_ine_renta_filter_urls",
     "BRONZE_ine_renta_insert",
-    "BRONZE_mitma_ine_relations_urls",
-    "BRONZE_mitma_ine_relations_create_table",
-    "BRONZE_mitma_ine_relations_filter_urls",
-    "BRONZE_mitma_ine_relations_insert",
+    "BRONZE_mitma_ine_relations",
     "BRONZE_load_spanish_holidays",
 ]

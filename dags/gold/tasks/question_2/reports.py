@@ -115,6 +115,8 @@ def GOLD_generate_mismatch_distribution(
     print("[TASK] Generating mismatch distribution (Cloud Run)")
     
     sql_query = f"""
+        INSTALL spatial; LOAD spatial;
+        
         WITH mismatch_filtered AS (
             SELECT
                 AVG(mismatch_ratio) AS mm_ratio
@@ -334,6 +336,8 @@ def GOLD_generate_table(
     print("[TASK] Generating table of gravity model (Cloud Run)")
     
     sql_query = f"""
+        INSTALL spatial; LOAD spatial;
+        
         WITH mismatch_filtered AS (
             SELECT
                 z1.nombre AS origin_name,
@@ -536,6 +540,8 @@ def GOLD_generate_mismatch_map(
     print("[TASK] Generating mismatch map (Cloud Run)")
     
     sql_query = f"""
+        INSTALL spatial; LOAD spatial;
+        
         WITH mismatch_base AS (
             SELECT
                 z1.nombre as origin,

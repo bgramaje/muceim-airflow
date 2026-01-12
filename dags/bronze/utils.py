@@ -519,15 +519,6 @@ def finalize_table(table_name: str, run_analyze: bool = True) -> Dict[str, Any]:
     
     print(f"[FINALIZE] Finalizing table {table_name}")
     
-    if run_analyze:
-        try:
-            start_time = time.time()
-            con.execute(f"ANALYZE {table_name};")
-            elapsed = time.time() - start_time
-            print(f"[FINALIZE] ANALYZE completed in {elapsed:.1f}s")
-        except Exception as e:
-            print(f"[FINALIZE] Warning: ANALYZE failed (non-critical): {e}")
-    
     # Get table stats
     try:
         count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
@@ -1294,40 +1285,62 @@ def merge_from_csv(table_name, url):
         raise RuntimeError(error_msg) from e
 
 
-def create_table_from_json(table_name, url):
+def create_table_from_json(table_name, url, year: int = None):
     """
     Creates a DuckDB table from a single JSON URL if it doesn't exist.
     Updates statistics for query optimization (DuckDB alternative to indexes).
+    
+    Parameters:
+    - table_name: Name of the table (without layer prefix)
+    - url: URL of the JSON file to create schema from
+    - year: Optional year to add as partition column (for INE tables)
     """
     full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
 
-    source_sql = _get_json_source_query(url)
+    source_sql = _get_json_source_query(url, year=year)
 
     print(f"Verifying schema for {full_table_name} using first file...")
+    
+    # Check if table already exists
+    table_exists = False
+    try:
+        result = con.execute(f"""
+            SELECT COUNT(*) as cnt FROM information_schema.tables 
+            WHERE table_schema = 'main' AND table_name = '{full_table_name}'
+        """).fetchone()
+        table_exists = result[0] > 0
+    except:
+        pass
+    
     con.execute(f"""
         CREATE TABLE IF NOT EXISTS {full_table_name} AS
         {source_sql}
         LIMIT 0;
     """)
-
-    # Update statistics for query optimization (DuckDB alternative to indexes)
-    # This helps optimize queries filtering by source_url
-    try:
-        con.execute(f"ANALYZE {full_table_name};")
-        print(
-            f"  Updated statistics for {full_table_name} (query optimization)")
-    except Exception as analyze_error:
-        print(f"  Could not analyze table (non-critical): {analyze_error}")
+    
+    # Add partitioning by year for INE tables (only for new tables)
+    if year is not None and not table_exists:
+        try:
+            con.execute(f"ALTER TABLE {full_table_name} SET PARTITIONED BY (year);")
+            print(f"  Added partitioning by year for {full_table_name}")
+        except Exception as partition_error:
+            print(f"  Could not add partitioning (non-critical): {partition_error}")
 
     print(f"Table {full_table_name} is ready.")
 
 
-def merge_from_json(table_name, url, key_columns=None):
+def merge_from_json(table_name, url, key_columns=None, year: int = None):
     """
     Merges data from a single JSON URL into an existing DuckDB table.
     Raises exception if merge fails to ensure task failure in Airflow.
     Handles transaction errors by forcing a new connection.
+    
+    Parameters:
+    - table_name: Name of the table (without layer prefix)
+    - url: URL of the JSON file to merge
+    - key_columns: List of columns to use as merge keys
+    - year: Optional year to add to each row (for INE tables)
     """
     full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
@@ -1336,16 +1349,19 @@ def merge_from_json(table_name, url, key_columns=None):
         merge_keys = _get_data_columns(full_table_name)
     else:
         existing_cols = _get_data_columns(full_table_name)
-        missing = [k for k in key_columns if k not in existing_cols]
+        # Exclude 'year' from missing check since it's added dynamically
+        missing = [k for k in key_columns if k not in existing_cols and k != 'year']
         if missing:
             raise ValueError(
                 f"Key columns {missing} not found in table metadata.")
         merge_keys = key_columns
 
     on_clause = _build_merge_condition(merge_keys)
-    source_sql = _get_json_source_query(url)
+    source_sql = _get_json_source_query(url, year=year)
 
     print(f"Merging data from {url} into {full_table_name}...")
+    if year is not None:
+        print(f"  Adding year column: {year}")
     try:
         con.execute(f"""
             MERGE INTO {full_table_name} AS target
@@ -1379,15 +1395,20 @@ def merge_from_json(table_name, url, key_columns=None):
         raise RuntimeError(error_msg) from e
 
 
-def _get_json_source_query(url):
+def _get_json_source_query(url, year: int = None):
     """
     Genera la subconsulta SELECT para leer el JSON.
+    
+    Parameters:
+    - url: URL of the JSON file
+    - year: Optional year to add as a column (for INE tables)
     """
+    year_column = f",\n            {year} AS year" if year is not None else ""
     return f"""
         SELECT 
             *,
             CURRENT_TIMESTAMP AS loaded_at,
-            '{url}' AS source_url
+            '{url}' AS source_url{year_column}
         FROM read_json('{url}', format='array')
     """
 

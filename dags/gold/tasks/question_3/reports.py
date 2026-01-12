@@ -186,6 +186,8 @@ def GOLD_generate_in_out_distribution(
     
     # Combined SQL query that gets both functional types and trips data
     sql_query = f"""
+        INSTALL spatial; LOAD spatial;
+        
         WITH functional_types AS (
             SELECT 
                 z.id AS zone_id,
@@ -382,6 +384,8 @@ def GOLD_generate_functional_type_map(
     print("[TASK] Generating functional type map (Cloud Run)")
     
     sql_query = f"""
+        INSTALL spatial; LOAD spatial;
+        
         SELECT 
             z.nombre AS name,
             ST_AsGeoJSON(ST_Multi(z.geometry_obj)) as geometry,

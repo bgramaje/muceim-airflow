@@ -29,6 +29,7 @@ from .mitma_zonification import (
     BRONZE_mitma_zonification_urls,
     BRONZE_mitma_zonification,
 )
+from .mitma_ine_relations import BRONZE_mitma_ine_relations
 
 __all__ = [
     # Original OD tasks
@@ -58,4 +59,6 @@ __all__ = [
     # Zonification tasks
     "BRONZE_mitma_zonification_urls",
     "BRONZE_mitma_zonification",
+    # MITMA-INE Relations task (local, lightweight)
+    "BRONZE_mitma_ine_relations",
 ]

@@ -1,5 +1,6 @@
 """
 Airflow task for loading INE Renta per Municipio data into Bronze layer.
+Uses Cloud Run executor to run SQL directly against INE API URLs.
 Uses dynamic task mapping to process each URL in parallel.
 """
 
@@ -29,26 +30,41 @@ def BRONZE_ine_renta_urls(year: int = 2023):
     print(f"[TASK] Generated {len(urls)} URLs for INE Renta data (year {year})")
     return urls
 
+
 @task
-def BRONZE_ine_renta_create_table(urls: list[str]):
+def BRONZE_ine_renta_create_table(urls: list[str], **context):
     """
     Create the table for INE Renta data if it doesn't exist.
-    This is a pre-task that runs once before the dynamic insertion.
-    Takes the first URL from the list to create the table schema.
+    Uses Cloud Run executor to run CREATE TABLE directly from INE API URL.
+    
+    Parameters:
+    - urls: List of URLs to process
     """
-    from bronze.utils import create_table_from_json
+    from utils.gcp import execute_sql_or_cloud_run
 
-    table_name = 'ine_renta_municipio'
+    table_name = 'bronze_ine_renta_municipio'
     
     if not urls:
         raise ValueError(f"No URLs provided to create table {table_name}")
     
     first_url = urls[0]
-    print(f"[TASK] Creating table {table_name} if not exists, using first URL: {first_url}")
+    print(f"[TASK] Creating table {table_name} if not exists")
     
-    create_table_from_json(table_name, first_url)
+    # SQL to create table from JSON URL with year column as INTEGER
+    sql_query = f"""
+        CREATE TABLE IF NOT EXISTS {table_name} AS
+        SELECT 
+            *,
+            CURRENT_TIMESTAMP AS loaded_at,
+            '{first_url}' AS source_url,
+            0 AS year
+        FROM read_json('{first_url}', format='array')
+        LIMIT 0;
+    """
     
-    return {'status': 'success', 'table_name': table_name}
+    result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
+    
+    return {'status': 'success', 'table_name': table_name, **result}
 
 
 @task
@@ -63,40 +79,44 @@ def BRONZE_ine_renta_filter_urls(urls: list[str]):
 
 
 @task
-def BRONZE_ine_renta_insert(url: str):
+def BRONZE_ine_renta_insert(url: str, year: int = None, **context):
     """
-    Insert data from a single URL using the new merge function.
-    Creates optimization indexes after successful insert for Silver layer queries.
+    Insert data from a single URL using Cloud Run executor.
+    Runs MERGE directly against the INE API URL.
+    
+    Parameters:
+    - url: URL to process
+    - year: Year to add to each row
     """
-    from bronze.utils import merge_from_json
-    from utils.utils import get_ducklake_connection
+    from utils.gcp import execute_sql_or_cloud_run
 
     print(f"[TASK] Processing URL: {url}")
+    print(f"[TASK] Year: {year}")
     
-    table_name = 'ine_renta_municipio'
-    full_table_name = f'bronze_{table_name}'
+    table_name = 'bronze_ine_renta_municipio'
     
-    # Insert/merge data from this URL
-    # Use 'COD' as the primary key
-    merge_from_json(
-        table_name, 
-        url,
-        key_columns=['COD']
-    )
-
-    # Update statistics for query optimization (DuckDB alternative to indexes)
-    # ANALYZE helps the query optimizer make better decisions for:
-    # - Processing of Nombre field in UNNEST operations with filters
-    # - Filter conditions on Nombre
-    # - JOIN operations
-    con = get_ducklake_connection()
-    try:
-        con.execute(f"ANALYZE {full_table_name};")
-        print(f"  Updated statistics for {full_table_name} (query optimization)")
-    except Exception as analyze_error:
-        print(f"  Could not analyze table (non-critical): {analyze_error}")
+    # SQL to merge data from INE API JSON URL
+    sql_query = f"""
+        -- Merge data from INE API directly
+        MERGE INTO {table_name} AS target
+        USING (
+            SELECT 
+                *,
+                CURRENT_TIMESTAMP AS loaded_at,
+                '{url}' AS source_url,
+                {year} AS year
+            FROM read_json('{url}', format='array')
+        ) AS source
+        ON target.COD = source.COD AND target.year = source.year
+        WHEN NOT MATCHED THEN
+            INSERT *;
+    """
+    
+    result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
     
     return {
         'status': 'success',
-        'url': url
+        'url': url,
+        'year': year,
+        **result
     }

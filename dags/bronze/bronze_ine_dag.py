@@ -35,10 +35,6 @@ from bronze.tasks.ine import (
     BRONZE_ine_renta_create_table,
     BRONZE_ine_renta_filter_urls,
     BRONZE_ine_renta_insert,
-    BRONZE_mitma_ine_relations_urls,
-    BRONZE_mitma_ine_relations_create_table,
-    BRONZE_mitma_ine_relations_filter_urls,
-    BRONZE_mitma_ine_relations_insert,
 )
 
 default_pool_slots = get_default_pool_slots()
@@ -140,6 +136,7 @@ def create_tg_empresas():
                 max_active_tis_per_dag=1,
                 pool_slots=default_pool_slots,
             )
+            .partial(year="{{ params.year }}")
             .expand(url=empresas_filtered_urls)
         )
 
@@ -198,6 +195,7 @@ def create_tg_poblacion():
                 max_active_tis_per_dag=1,
                 pool_slots=default_pool_slots,
             )
+            .partial(year="{{ params.year }}")
             .expand(url=poblacion_filtered_urls)
         )
 
@@ -216,64 +214,6 @@ def create_tg_poblacion():
         )
     
     return tg_poblacion()
-
-
-def create_tg_mitma_ine_relations():
-    """Factory function to create MITMA-INE Relations TaskGroup."""
-    group_id = "mitma_ine_relations"
-    
-    @task_group(group_id=group_id)
-    def tg_mitma_ine_relations():
-        """TaskGroup for MITMA-INE Relations data ingestion."""
-        relations_urls = BRONZE_mitma_ine_relations_urls.override(
-            task_id="relations_urls",
-        )()
-
-        relations_filtered_urls = BRONZE_mitma_ine_relations_filter_urls.override(
-            task_id="relations_filter_urls",
-        )(urls=relations_urls)
-
-        @task.branch
-        def check_relations_urls(filtered_urls: list[str], **context):
-            """Check if there are URLs to process."""
-            if len(filtered_urls) > 0:
-                return f"{group_id}.relations_create"
-            else:
-                return f"{group_id}.relations_skipped"
-
-        branch_task = check_relations_urls.override(
-            task_id="check_urls"
-        )(relations_filtered_urls)
-
-        relations_create = BRONZE_mitma_ine_relations_create_table.override(
-            task_id="relations_create",
-        )(urls=relations_urls)
-        
-        relations_insert = (
-            BRONZE_mitma_ine_relations_insert.override(
-                task_id="relations_insert",
-                pool="default_pool", 
-                max_active_tis_per_dag=1,
-                pool_slots=default_pool_slots,
-            )
-            .expand(url=relations_filtered_urls)
-        )
-
-        relations_skipped = EmptyOperator(
-            task_id="relations_skipped"
-        )
-
-        relations_urls >> relations_filtered_urls >> branch_task
-
-        branch_task >> relations_create >> relations_insert
-        branch_task >> relations_skipped
-        
-        return SimpleNamespace(
-            start=relations_urls,
-            insert=[relations_insert, relations_skipped],
-        )
-    
-    return tg_mitma_ine_relations()
 
 
 def create_tg_renta():
@@ -314,6 +254,7 @@ def create_tg_renta():
                 max_active_tis_per_dag=1,
                 pool_slots=default_pool_slots,
             )
+            .partial(year="{{ params.year }}")
             .expand(url=renta_filtered_urls)
         )
 
@@ -343,7 +284,7 @@ with DAG(
     params={
         "year": Param(type="string", description="Year for INE data (YYYY)"),
     },
-    description="INE Bronze layer data ingestion (municipios, empresas, poblacion, renta) + MITMA-INE relations",
+    description="INE Bronze layer data ingestion (municipios, empresas, poblacion, renta)",
     default_args={
         "retries": 3,
         "retry_delay": timedelta(seconds=30),
@@ -358,7 +299,6 @@ with DAG(
     municipios_group = create_tg_municipios()
     empresas_group = create_tg_empresas()
     poblacion_group = create_tg_poblacion()
-    relations_group = create_tg_mitma_ine_relations()
     renta_group = create_tg_renta()
 
     # Infrastructure -> All INE TaskGroups
@@ -366,7 +306,6 @@ with DAG(
         municipios_group.start,
         empresas_group.start,
         poblacion_group.start,
-        relations_group.start,
         renta_group.start,
     ]
 
@@ -387,8 +326,6 @@ with DAG(
     empresas_group.insert[1] >> done
     poblacion_group.insert[0] >> done
     poblacion_group.insert[1] >> done
-    relations_group.insert[0] >> done
-    relations_group.insert[1] >> done
     renta_group.insert[0] >> done
     renta_group.insert[1] >> done
 

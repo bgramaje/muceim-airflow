@@ -56,19 +56,37 @@ def SILVER_mitma_people_day_create_table(**context):
 
 
 @task
-def SILVER_mitma_people_day_insert(**context):
+def SILVER_mitma_people_day_insert(start_date: str = None, end_date: str = None, **context):
     """
     Inserta datos transformados desde bronze_mitma_people_day_municipios a silver_people_day.
+    Filtra por rango de fechas si se especifican los parámetros.
+    
+    Parameters:
+    - start_date: Fecha inicio para filtrar (formato: YYYY-MM-DD). Si None, no filtra por inicio.
+    - end_date: Fecha fin para filtrar (formato: YYYY-MM-DD). Si None, no filtra por fin.
     
     Returns:
     - Dict with task status and info
     """
     print("[TASK] Inserting data into silver_people_day table")
+    print(f"[TASK] Date range filter: start={start_date}, end={end_date}")
 
     con = get_ducklake_connection()
     
+    # Construir filtro de fechas si se especifican
+    date_filter = ""
+    if start_date and start_date not in ('None', '', '{{ params.start }}'):
+        # Convertir formato YYYY-MM-DD a YYYYMMDD si es necesario
+        start_clean = start_date.replace('-', '')
+        date_filter += f" AND CAST(fecha AS VARCHAR) >= '{start_clean}'"
+        print(f"[TASK] Filtering from start_date: {start_clean}")
+    if end_date and end_date not in ('None', '', '{{ params.end }}'):
+        end_clean = end_date.replace('-', '')
+        date_filter += f" AND CAST(fecha AS VARCHAR) <= '{end_clean}'"
+        print(f"[TASK] Filtering to end_date: {end_clean}")
+    
     # Insertar datos
-    con.execute("""
+    query = f"""
         INSERT INTO silver_people_day
         WITH base AS (
             SELECT
@@ -79,6 +97,8 @@ def SILVER_mitma_people_day_insert(**context):
                 numero_viajes,
                 CAST(personas AS DOUBLE) as personas
             FROM bronze_mitma_people_day_municipios
+            WHERE 1=1
+            {date_filter}
         )
         SELECT *
         FROM base
@@ -88,7 +108,9 @@ def SILVER_mitma_people_day_insert(**context):
           AND sexo IS NOT NULL
           AND numero_viajes IS NOT NULL
           AND personas IS NOT NULL;
-    """)
+    """
+    
+    con.execute(query)
 
     count = con.execute("SELECT COUNT(*) AS count FROM silver_people_day").fetchdf()
     print(f"[TASK] Inserted {count.iloc[0]['count']:,} records into silver_people_day")
@@ -98,5 +120,6 @@ def SILVER_mitma_people_day_insert(**context):
     return {
         "status": "success",
         "records": int(count.iloc[0]['count']),
-        "table": "silver_people_day"
+        "table": "silver_people_day",
+        "date_filter": {"start": start_date, "end": end_date}
     }

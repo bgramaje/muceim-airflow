@@ -18,8 +18,8 @@ from utils.utils import get_ducklake_connection
 @task
 def SILVER_od_quality_get_date_batches(batch_size: int = 30, **context) -> List[Dict[str, Any]]:
     """
-    Obtiene las fechas únicas de silver_mitma_od_processed_dates que aún no están en silver_mitma_od_quality,
-    y las divide en batches. Usa la diferencia entre las fechas procesadas y las que ya están en quality.
+    Obtiene las fechas únicas de silver_mitma_od que aún no están en silver_mitma_od_quality,
+    y las divide en batches. Usa DISTINCT directamente sobre silver_mitma_od (más simple y mantenible).
     
     Parameters:
     - batch_size: Número de fechas por batch (default: 30)
@@ -31,18 +31,18 @@ def SILVER_od_quality_get_date_batches(batch_size: int = 30, **context) -> List[
     
     con = get_ducklake_connection()
     
-    # Obtener fechas que están en silver_mitma_od_processed_dates pero no en silver_mitma_od_quality
+    # Obtener fechas que están en silver_mitma_od pero no en silver_mitma_od_quality
     query = """
         SELECT DISTINCT 
-            pod.fecha
-        FROM silver_mitma_od_processed_dates pod
-        WHERE pod.fecha IS NOT NULL
-            AND pod.fecha NOT IN (
+            strftime(sod.fecha, '%Y%m%d') AS fecha
+        FROM silver_mitma_od sod
+        WHERE sod.fecha IS NOT NULL
+            AND strftime(sod.fecha, '%Y%m%d') NOT IN (
                 SELECT DISTINCT strftime(fecha, '%Y%m%d')
                 FROM silver_mitma_od_quality
                 WHERE fecha IS NOT NULL
             )
-        ORDER BY pod.fecha
+        ORDER BY fecha
     """
     
     try:
@@ -93,7 +93,7 @@ def SILVER_od_quality_create_table(**context) -> Dict:
     Crea la tabla silver_mitma_od_quality si no existe.
     silver_mitma_od_quality está particionada por year/month/day de fecha para optimizar queries.
     El particionado solo se aplica a tablas nuevas (vacías) para evitar corrupción.
-    No necesita tabla de tracking separada, usa la diferencia con silver_mitma_od_processed_dates.
+    Usa DISTINCT sobre silver_mitma_od para determinar qué fechas procesar.
     
     Returns:
     - Dict con status de la creación de la tabla

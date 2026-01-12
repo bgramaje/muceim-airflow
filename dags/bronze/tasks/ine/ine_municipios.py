@@ -1,5 +1,6 @@
 """
 Airflow task for loading INE Municipios data into Bronze layer.
+Uses Cloud Run executor to run SQL directly against INE API URLs.
 """
 
 from airflow.sdk import task
@@ -18,14 +19,14 @@ def BRONZE_ine_municipios_urls():
 
 
 @task
-def BRONZE_ine_municipios_create_table(urls: list[str]):
+def BRONZE_ine_municipios_create_table(urls: list[str], **context):
     """
     Create the table for INE Municipios data if it doesn't exist.
-    Takes the first URL from the list to create the table schema.
+    Uses Cloud Run executor to run CREATE TABLE directly from INE API URL.
     """
-    from bronze.utils import create_table_from_json
+    from utils.gcp import execute_sql_or_cloud_run
 
-    table_name = 'ine_municipios'
+    table_name = 'bronze_ine_municipios'
     
     if not urls:
         raise ValueError(f"No URLs provided to create table {table_name}")
@@ -33,9 +34,21 @@ def BRONZE_ine_municipios_create_table(urls: list[str]):
     first_url = urls[0]
     print(f"[TASK] Creating table {table_name} if not exists, using first URL: {first_url}")
     
-    create_table_from_json(table_name, first_url)
+    # SQL to create table from JSON URL (no year for municipios - static reference table)
+    sql_query = f"""
+        -- Create table from INE API JSON response
+        CREATE TABLE IF NOT EXISTS {table_name} AS
+        SELECT 
+            *,
+            CURRENT_TIMESTAMP AS loaded_at,
+            '{first_url}' AS source_url
+        FROM read_json('{first_url}', format='array')
+        LIMIT 0;
+    """
     
-    return {'status': 'success', 'table_name': table_name}
+    result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
+    
+    return {'status': 'success', 'table_name': table_name, **result}
 
 
 @task
@@ -50,39 +63,37 @@ def BRONZE_ine_municipios_filter_urls(urls: list[str]):
 
 
 @task
-def BRONZE_ine_municipios_insert(url: str):
+def BRONZE_ine_municipios_insert(url: str, **context):
     """
-    Insert data from a single URL using the merge function.
-    Creates optimization indexes after successful insert for Silver layer queries.
+    Insert data from a single URL using Cloud Run executor.
+    Runs MERGE directly against the INE API URL.
     """
-    from bronze.utils import merge_from_json
-    from utils.utils import get_ducklake_connection
+    from utils.gcp import execute_sql_or_cloud_run
 
     print(f"[TASK] Processing URL: {url}")
     
-    table_name = 'ine_municipios'
-    full_table_name = f'bronze_{table_name}'
+    table_name = 'bronze_ine_municipios'
     
-    # Insert/merge data from this URL
-    # Use 'Id' as the primary key
-    merge_from_json(
-        table_name, 
-        url,
-        key_columns=['Id']
-    )
-
-    # Update statistics for query optimization (DuckDB alternative to indexes)
-    # ANALYZE helps the query optimizer make better decisions for:
-    # - JOIN ON m.Codigo = r.municipio_ine
-    # - Filter WHERE m.Codigo IS NOT NULL
-    con = get_ducklake_connection()
-    try:
-        con.execute(f"ANALYZE {full_table_name};")
-        print(f"  Updated statistics for {full_table_name} (query optimization)")
-    except Exception as analyze_error:
-        print(f"  Could not analyze table (non-critical): {analyze_error}")
+    # SQL to merge data from INE API JSON URL
+    sql_query = f"""
+        -- Merge data from INE API directly
+        MERGE INTO {table_name} AS target
+        USING (
+            SELECT 
+                *,
+                CURRENT_TIMESTAMP AS loaded_at,
+                '{url}' AS source_url
+            FROM read_json('{url}', format='array')
+        ) AS source
+        ON target.Id = source.Id
+        WHEN NOT MATCHED THEN
+            INSERT *;
+    """
+    
+    result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
     
     return {
         'status': 'success',
-        'url': url
+        'url': url,
+        **result
     }
