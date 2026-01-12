@@ -566,14 +566,14 @@ def create_url_batches(urls: List[str], batch_size: int = 10) -> List[List[str]]
 # ============================================================================
 def copy_batch_to_table(
     table_name: str,
-    urls: List[str],
+    s3_paths: List[str],
+    original_urls: List[str] = None,
     threads: int = 4,
     fecha_as_timestamp: bool = False,
     **context
 ) -> Dict[str, Any]:
     """
-    V4: Efficiently copies a batch of CSV files directly from HTTP URLs to DuckDB table using INSERT INTO.
-    DuckDB with httpfs can read directly from HTTP URLs without downloading.
+    V4: Efficiently copies a batch of CSV files from S3/RustFS to DuckDB table using INSERT INTO.
     Builds complete SQL query and uses executor (Cloud Run) instead of ingestor.
     Uses multiple threads internally and read_csv with multiple URLs for faster processing.
     
@@ -582,7 +582,8 @@ def copy_batch_to_table(
     
     Parameters:
     - table_name: Full table name (with 'bronze_' prefix)
-    - urls: List of HTTP URLs to read directly (DuckDB with httpfs reads directly from HTTP)
+    - s3_paths: List of S3 paths to read from RustFS
+    - original_urls: Optional list of original HTTP URLs (used for source_file column)
     - threads: Number of threads to use for DuckDB internal parallelization
     - fecha_as_timestamp: If True, parses fecha from VARCHAR to TIMESTAMP
     - **context: Airflow context for execute_sql_or_cloud_run
@@ -594,22 +595,26 @@ def copy_batch_to_table(
     
     full_table_name = table_name if table_name.startswith('bronze_') else f'bronze_{table_name}'
     
-    if not urls:
+    if not s3_paths:
         return {'success': 0, 'failed': 0, 'errors': []}
     
-    print(f"[COPY_BATCH] Processing {len(urls)} URLs directly into {full_table_name} with {threads} threads using executor")
+    # Use original_urls for source_file if provided, otherwise use s3_paths
+    if original_urls is None:
+        original_urls = s3_paths
+    
+    print(f"[COPY_BATCH] Processing {len(s3_paths)} files from RustFS into {full_table_name} with {threads} threads using executor")
     if fecha_as_timestamp:
         print(f"[COPY_BATCH] Will parse fecha to TIMESTAMP")
     
     start_time = time.time()
     
-    # Build SQL query - use read_csv with multiple URLs for faster processing
-    # DuckDB with httpfs can read directly from HTTP URLs
+    # Build SQL query - use read_csv with S3 paths
     # We'll use UNION ALL to ensure proper source_file mapping
     union_parts = []
-    for url in urls:
-        source_file_value_escaped = url.replace("'", "''")
-        url_escaped = url.replace("'", "''")
+    for i, s3_path in enumerate(s3_paths):
+        source_file_value = original_urls[i] if i < len(original_urls) else s3_path
+        source_file_value_escaped = source_file_value.replace("'", "''")
+        s3_path_escaped = s3_path.replace("'", "''")
         
         if fecha_as_timestamp:
             union_parts.append(f"""
@@ -619,7 +624,7 @@ def copy_batch_to_table(
                     CURRENT_TIMESTAMP AS loaded_at,
                     '{source_file_value_escaped}' AS source_file
                 FROM read_csv(
-                    '{url_escaped}',
+                    '{s3_path_escaped}',
                     filename = true,
                     header = true,
                     all_varchar = true
@@ -632,7 +637,7 @@ def copy_batch_to_table(
                     CURRENT_TIMESTAMP AS loaded_at,
                     '{source_file_value_escaped}' AS source_file
                 FROM read_csv(
-                    '{url_escaped}',
+                    '{s3_path_escaped}',
                     filename = true,
                     header = true,
                     all_varchar = true
@@ -653,7 +658,7 @@ def copy_batch_to_table(
         # Execute SQL using executor (Cloud Run or local)
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         success_count = len(s3_paths)
-        print(f"[COPY_BATCH] Successfully processed {len(s3_paths)} files using executor with read_csv multiple URLs")
+        print(f"[COPY_BATCH] Successfully processed {len(s3_paths)} files using executor")
     except Exception as e:
         # If batch insert fails, log error
         error_msg = f"Error copying batch: {str(e)}"

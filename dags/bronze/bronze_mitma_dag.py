@@ -26,6 +26,7 @@ from bronze.tasks.mitma import (
     BRONZE_mitma_od_download_batch,
     BRONZE_mitma_od_process_batch,
     BRONZE_mitma_od_download_and_process_batch,
+    BRONZE_mitma_od_cleanup_batch,
     BRONZE_mitma_people_day_urls,
     BRONZE_mitma_people_day_create_table,
     BRONZE_mitma_people_day_filter_urls,
@@ -98,14 +99,36 @@ def create_tg_od(zone_type: str):
             task_id="od_create_batches"
         )(od_filtered_urls)
         
-        # Process batches in parallel directly from HTTP URLs (no download step)
-        od_download_and_process = (
-            BRONZE_mitma_od_download_and_process_batch.override(
-                task_id="od_download_and_process",
+        # FASE 1: Descargar URLs y subir a RustFS (local - bajo consumo de recursos)
+        # Dynamic task mapping para descargar cada batch en paralelo (local)
+        od_download = (
+            BRONZE_mitma_od_download_batch.override(
+                task_id="od_download_to_rustfs",
                 pool="default_pool",
             )
             .partial(zone_type=zone_type)
             .expand(batch=od_batches)
+        )
+        
+        # FASE 2: Procesar archivos desde RustFS con Cloud Run (alto consumo de recursos)
+        # Dynamic task mapping para procesar cada batch descargado
+        od_process = (
+            BRONZE_mitma_od_process_batch.override(
+                task_id="od_process_cloudrun",
+                pool="default_pool",
+            )
+            .partial(zone_type=zone_type)
+            .expand(download_result=od_download)
+        )
+        
+        # FASE 3: Limpieza de archivos temporales de RustFS después del procesamiento
+        # Usa el resultado de od_process (que incluye download_result original)
+        od_cleanup = (
+            BRONZE_mitma_od_cleanup_batch.override(
+                task_id="od_cleanup_rustfs",
+                pool="default_pool",
+            )
+            .expand(download_result=od_process)
         )
 
         od_skipped = EmptyOperator(
@@ -114,12 +137,12 @@ def create_tg_od(zone_type: str):
 
         od_urls >> od_filtered_urls >> branch_task
 
-        branch_task >> od_create_table >> od_batches >> od_download_and_process
+        branch_task >> od_create_table >> od_batches >> od_download >> od_process >> od_cleanup
         branch_task >> od_skipped
         
         return SimpleNamespace(
             start=od_urls,
-            insert=[od_download_and_process, od_skipped],
+            insert=[od_cleanup, od_skipped],
         )
     
     return tg_od(zone_type=zone_type)

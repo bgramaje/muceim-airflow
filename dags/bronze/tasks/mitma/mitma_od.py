@@ -110,11 +110,13 @@ def BRONZE_mitma_od_create_partitioned_table(
 def BRONZE_mitma_od_download_batch(
     batch: Dict[str, Any],
     zone_type: str = 'municipios',
-    max_parallel: int = 4
+    max_parallel: int = 1
 ) -> Dict[str, Any]:
     """
-    V2: Downloads a batch of URLs to RustFS with parallel processing.
+    V2: Downloads a batch of URLs to RustFS sequentially (one by one).
     Includes retry with exponential backoff.
+    
+    Downloads are done sequentially to reduce local resource usage.
     """
     from bronze.utils import download_batch_to_rustfs
     
@@ -129,8 +131,9 @@ def BRONZE_mitma_od_download_batch(
             'failed': []
         }
     
-    print(f"[TASK_V2] Downloading batch {batch_index}: {len(urls)} URLs")
+    print(f"[TASK_V2] Downloading batch {batch_index}: {len(urls)} URLs sequentially (one by one)")
     
+    # max_parallel=1 ensures sequential downloads within the batch
     results = download_batch_to_rustfs(urls, dataset, zone_type, max_parallel)
     
     downloaded = [
@@ -159,6 +162,8 @@ def BRONZE_mitma_od_process_batch(
     Uses executor (Cloud Run) instead of ingestor - builds complete SQL query and passes it to executor.
     Parses fecha from VARCHAR to TIMESTAMP and uses read_csv with multiple URLs for faster processing.
     Faster than MERGE because it uses INSERT INTO instead of MERGE.
+    
+    Returns the original download_result with processing status appended for cleanup phase.
     """
     from bronze.utils import copy_from_csv_batch
     
@@ -176,7 +181,14 @@ def BRONZE_mitma_od_process_batch(
         **context
     )
     
-    return result
+    # Return original download_result with processing info for cleanup phase
+    return {
+        **download_result,
+        'process_status': result.get('status', 'unknown'),
+        'processed': result.get('processed', 0),
+        'process_failed': result.get('failed', 0),
+        'process_errors': result.get('errors', [])
+    }
 
 
 @task
