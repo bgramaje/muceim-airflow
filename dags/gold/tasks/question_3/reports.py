@@ -188,14 +188,24 @@ def GOLD_generate_in_out_distribution(
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
         
-        WITH functional_types AS (
+        -- Pre-calcular el polígono una sola vez
+        WITH polygon_filter AS (
+            SELECT ST_GeomFromText('{polygon_wkt}') AS polygon
+        ),
+        -- Pre-filtrar zonas que están dentro del polígono (más eficiente que hacerlo en cada JOIN)
+        filtered_zones AS (
+            SELECT z.id, z.nombre
+            FROM silver_zones z
+            CROSS JOIN polygon_filter p
+            WHERE ST_Within(z.centroid, p.polygon)
+        ),
+        functional_types AS (
             SELECT 
                 z.id AS zone_id,
                 z.nombre AS municipality,
                 ft.functional_type
             FROM gold_zone_functional_type ft
-            JOIN silver_zones z ON ft.zone_id = z.id
-            WHERE ST_Within(z.centroid, ST_GeomFromText('{polygon_wkt}'))
+            JOIN filtered_zones z ON ft.zone_id = z.id
         ),
         trips_out AS (
             SELECT
@@ -386,16 +396,23 @@ def GOLD_generate_functional_type_map(
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
         
+        -- Pre-calcular el polígono una sola vez
+        WITH polygon_filter AS (
+            SELECT ST_GeomFromText('{polygon_wkt}') AS polygon
+        ),
+        -- Pre-filtrar zonas que están dentro del polígono (más eficiente que hacerlo en cada JOIN)
+        filtered_zones AS (
+            SELECT z.id, z.nombre, z.geometry_obj
+            FROM silver_zones z
+            CROSS JOIN polygon_filter p
+            WHERE ST_Within(z.centroid, p.polygon)
+        )
         SELECT 
             z.nombre AS name,
             ST_AsGeoJSON(ST_Multi(z.geometry_obj)) as geometry,
             ft.functional_type
         FROM gold_zone_functional_type ft
-            JOIN silver_zones z ON ft.zone_id = z.id
-        WHERE ST_Within(
-            z.centroid,
-            ST_GeomFromText('{polygon_wkt}')
-        )
+        JOIN filtered_zones z ON ft.zone_id = z.id
     """
     
     # Store extra env vars in context

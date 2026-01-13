@@ -537,7 +537,51 @@ def execute_sql_or_cloud_run(sql_query: str, post_process_func=None, **context) 
     else:
         # Ejecutar localmente
         import time
+        import os
         from utils.utils import get_ducklake_connection
+        
+        # Get S3 credentials from Airflow connection to set as environment variables
+        # (same logic as in exec_gcp_ducklake_executor)
+        try:
+            from airflow.sdk import Connection
+            s3_conn = Connection.get('rustfs_s3_conn')
+            s3_extra = s3_conn.extra_dejson
+            endpoint_url = s3_extra.get('endpoint_url', 'http://rustfs:9000')
+            s3_endpoint = endpoint_url.replace('http://', '').replace('https://', '')
+            rustfs_user = s3_extra.get('aws_access_key_id', 'admin')
+            rustfs_password = s3_extra.get('aws_secret_access_key', 'muceim-duckduck.2025!')
+            rustfs_ssl = 'true' if 'https' in endpoint_url else 'false'
+            rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
+        except Exception as e:
+            print(f"[WARNING] Could not get S3 credentials from Airflow connection: {str(e)}")
+            # Use defaults if connection not available
+            s3_endpoint = "rustfs:9000"
+            rustfs_user = "admin"
+            rustfs_password = "muceim-duckduck.2025!"
+            rustfs_ssl = "false"
+            rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
+        
+        # Store original environment variables to restore later
+        original_env = {}
+        
+        # Set S3 environment variables
+        env_vars_to_set = {
+            'S3_ENDPOINT': s3_endpoint,
+            'RUSTFS_USER': rustfs_user,
+            'RUSTFS_PASSWORD': rustfs_password,
+            'RUSTFS_SSL': rustfs_ssl,
+            'RUSTFS_BUCKET': rustfs_bucket,
+        }
+        
+        # Add extra environment variables from context if provided
+        extra_env_vars = context.get('extra_env_vars', {})
+        for key, value in extra_env_vars.items():
+            env_vars_to_set[key] = str(value)
+        
+        # Set environment variables (store originals to restore later)
+        for key, value in env_vars_to_set.items():
+            original_env[key] = os.environ.get(key)
+            os.environ[key] = value
         
         start_time = time.time()
         
@@ -578,6 +622,8 @@ def execute_sql_or_cloud_run(sql_query: str, post_process_func=None, **context) 
                         result.update(post_result)
                 except Exception as e:
                     print(f"[WARNING] Post-processing function failed: {str(e)}")
+                    import traceback
+                    print(f"[ERROR] Traceback: {traceback.format_exc()}")
                     # No fallamos la tarea si el post-procesamiento falla, solo logueamos
             
             return result
@@ -585,6 +631,15 @@ def execute_sql_or_cloud_run(sql_query: str, post_process_func=None, **context) 
         except Exception as e:
             error_msg = f"Failed to execute SQL locally: {str(e)}"
             raise RuntimeError(error_msg) from e
+        finally:
+            # Restore original environment variables
+            for key, original_value in original_env.items():
+                if original_value is None:
+                    # Variable didn't exist before, remove it
+                    os.environ.pop(key, None)
+                else:
+                    # Restore original value
+                    os.environ[key] = original_value
 
 
 def exec_gcp_ducklake_ingestor_from_http(

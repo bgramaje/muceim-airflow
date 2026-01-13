@@ -117,16 +117,24 @@ def GOLD_generate_mismatch_distribution(
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
         
-        WITH mismatch_filtered AS (
+        -- Pre-calcular el polígono una sola vez
+        WITH polygon_filter AS (
+            SELECT ST_GeomFromText('{polygon_wkt}') AS polygon
+        ),
+        -- Pre-filtrar zonas que están dentro del polígono (más eficiente que hacerlo en cada JOIN)
+        filtered_zones AS (
+            SELECT z.id
+            FROM silver_zones z
+            CROSS JOIN polygon_filter p
+            WHERE ST_Within(z.centroid, p.polygon)
+        ),
+        -- Filtrar datos de la tabla gold y hacer JOINs solo con zonas filtradas
+        mismatch_filtered AS (
             SELECT
                 AVG(mismatch_ratio) AS mm_ratio
             FROM gold_gravity_mismatch gmm
-                JOIN silver_zones z ON gmm.origin_id = z.id
+            JOIN filtered_zones z ON gmm.origin_id = z.id
             WHERE date BETWEEN '{start_date}' AND '{end_date}'
-                AND ST_Within(
-                    z.centroid,
-                    ST_GeomFromText('{polygon_wkt}')
-                )
             GROUP BY gmm.origin_id, gmm.destination_id
         )
         SELECT
@@ -338,7 +346,19 @@ def GOLD_generate_table(
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
         
-        WITH mismatch_filtered AS (
+        -- Pre-calcular el polígono una sola vez
+        WITH polygon_filter AS (
+            SELECT ST_GeomFromText('{polygon_wkt}') AS polygon
+        ),
+        -- Pre-filtrar zonas que están dentro del polígono (más eficiente que hacerlo en cada JOIN)
+        filtered_zones AS (
+            SELECT z.id, z.nombre
+            FROM silver_zones z
+            CROSS JOIN polygon_filter p
+            WHERE ST_Within(z.centroid, p.polygon)
+        ),
+        -- Filtrar datos de la tabla gold y hacer JOINs solo con zonas filtradas
+        mismatch_filtered AS (
             SELECT
                 z1.nombre AS origin_name,
                 z2.nombre AS destination_name,
@@ -346,17 +366,9 @@ def GOLD_generate_table(
                 AVG(estimated_trips) AS estimated_trips,
                 AVG(mismatch_ratio) AS mm_ratio
             FROM gold_gravity_mismatch gmm
-                JOIN silver_zones z1 ON gmm.origin_id = z1.id
-                JOIN silver_zones z2 ON gmm.destination_id = z2.id
+            JOIN filtered_zones z1 ON gmm.origin_id = z1.id
+            JOIN filtered_zones z2 ON gmm.destination_id = z2.id
             WHERE date BETWEEN '{start_date}' AND '{end_date}'
-            AND ST_Within(
-                z1.centroid,
-                ST_GeomFromText('{polygon_wkt}')
-            )
-            AND ST_Within(
-                z2.centroid,
-                ST_GeomFromText('{polygon_wkt}')
-            )
             GROUP BY 1, 2
         )
         SELECT *
@@ -542,36 +554,47 @@ def GOLD_generate_mismatch_map(
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
         
-        WITH mismatch_base AS (
+        -- Pre-calcular el polígono una sola vez
+        WITH polygon_filter AS (
+            SELECT ST_GeomFromText('{polygon_wkt}') AS polygon
+        ),
+        -- Pre-filtrar zonas que están dentro del polígono (más eficiente que hacerlo en cada JOIN)
+        filtered_zones AS (
+            SELECT 
+                z.id,
+                z.nombre,
+                z.centroid,
+                ST_X(z.centroid) AS lon,
+                ST_Y(z.centroid) AS lat
+            FROM silver_zones z
+            CROSS JOIN polygon_filter p
+            WHERE ST_Within(z.centroid, p.polygon)
+        ),
+        -- Filtrar datos de la tabla gold y hacer JOINs solo con zonas filtradas
+        mismatch_base AS (
             SELECT
                 z1.nombre as origin,
                 z2.nombre as destination,
                 date,
-                ST_AsGeoJSON(z1.centroid) AS origin_geojson,
-                ST_AsGeoJSON(z2.centroid) AS dest_geojson,
+                z1.lon AS origin_lon,
+                z1.lat AS origin_lat,
+                z2.lon AS dest_lon,
+                z2.lat AS dest_lat,
                 actual_trips,
                 estimated_trips,
                 mismatch_ratio
             FROM gold_gravity_mismatch gmm
-                JOIN silver_zones z1 ON gmm.origin_id = z1.id
-                JOIN silver_zones z2 ON gmm.destination_id = z2.id
+            JOIN filtered_zones z1 ON gmm.origin_id = z1.id
+            JOIN filtered_zones z2 ON gmm.destination_id = z2.id
             WHERE date BETWEEN '{start_date}' AND '{end_date}'
-                AND ST_Within(
-                    z1.centroid,
-                    ST_GeomFromText('{polygon_wkt}')
-                )
-                AND ST_Within(
-                    z2.centroid,
-                    ST_GeomFromText('{polygon_wkt}')
-                )
         )
         SELECT
             origin, 
             destination,
-            (origin_geojson::JSON->'coordinates')[0] AS origin_lon,
-            (origin_geojson::JSON->'coordinates')[1] AS origin_lat,
-            (dest_geojson::JSON->'coordinates')[0] AS dest_lon,
-            (dest_geojson::JSON->'coordinates')[1] AS dest_lat,
+            origin_lon,
+            origin_lat,
+            dest_lon,
+            dest_lat,
             AVG(actual_trips) AS actual_trips,
             AVG(estimated_trips) AS estimated_trips,
             AVG(mismatch_ratio) AS mm_ratio

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from airflow.models import Param
 from airflow.sdk import Variable
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-from airflow.sdk import task
+from airflow.sdk import task, TaskGroup
 from airflow import DAG
 from airflow.providers.standard.operators.empty import EmptyOperator
 import uuid
@@ -20,6 +20,7 @@ from gold.tasks import (
     GOLD_generate_functional_type_map,
     GOLD_verify_s3_connection,
 )
+from utils.dag import validate_dates
 
 
 @task
@@ -82,16 +83,25 @@ with DAG(
     start = EmptyOperator(task_id="start")
     done = EmptyOperator(task_id="done")
 
-    save_id = generate_directory.override(task_id="create_directory")(
-        start_date="{{ params.start }}",
-        end_date="{{ params.end }}",
-        polygon_wkt="{{ params.polygon }}"
-    )
+    # Infrastructure setup TaskGroup
+    with TaskGroup(group_id="infra") as infra_group:
+        validate_dates_task = validate_dates.override(task_id="validate_dates")(
+            start_date="{{ params.start }}",
+            end_date="{{ params.end }}"
+        )
 
-    # Verify S3 connection before generating reports
-    verify_s3 = GOLD_verify_s3_connection.override(task_id="verify_s3_connection")()
+        save_id = generate_directory.override(task_id="create_directory")(
+            start_date="{{ params.start }}",
+            end_date="{{ params.end }}",
+            polygon_wkt="{{ params.polygon }}"
+        )
 
-    # Question 3: Functional type reports
+        verify_s3 = GOLD_verify_s3_connection.override(task_id="verify_s3_connection")()
+
+        # Sequential execution within infra group
+        validate_dates_task >> save_id >> verify_s3
+
+    # Question 3: Functional type reports (parallel execution)
     func_type_dist = GOLD_generate_in_out_distribution.override(task_id="functional_type_hourly")(
         save_id=save_id,
         start_date="{{ params.start }}",
@@ -105,5 +115,6 @@ with DAG(
         polygon_wkt="{{ params.polygon }}"
     )
 
-    start >> save_id >> verify_s3 >> [func_type_dist, func_type_map] >> done
+    # Execution flow: start -> infra -> reports (parallel) -> done
+    start >> infra_group >> [func_type_dist, func_type_map] >> done
 

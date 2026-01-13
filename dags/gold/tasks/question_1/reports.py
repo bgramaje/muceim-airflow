@@ -83,7 +83,8 @@ def _post_process_typical_day_map(df, con, result_dict):
                         },
                         "visualChannels": {
                             "colorField": {"name": "avg_trips", "type": "real"},
-                            "colorScale": "quantile"
+                            "colorScale": "quantile",
+                            "sizeField": {"name": "avg_trips", "type": "real"}
                         }
                     }
                 ],
@@ -163,38 +164,49 @@ def GOLD_generate_typical_day_map(
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
         
-        WITH od_base AS (
+        -- Pre-calcular el polígono una sola vez
+        WITH polygon_filter AS (
+            SELECT ST_GeomFromText('{polygon_wkt}') AS polygon
+        ),
+        -- Pre-filtrar zonas que están dentro del polígono (más eficiente que hacerlo en cada JOIN)
+        filtered_zones AS (
+            SELECT 
+                z.id,
+                z.nombre,
+                z.centroid,
+                ST_X(z.centroid) AS lon,
+                ST_Y(z.centroid) AS lat
+            FROM silver_zones z
+            CROSS JOIN polygon_filter p
+            WHERE ST_Within(z.centroid, p.polygon)
+        ),
+        -- Filtrar datos de la tabla gold y hacer JOINs solo con zonas filtradas
+        od_base AS (
             SELECT
                 z1.nombre as origin,
                 z2.nombre as destination,
-                ST_AsGeoJSON(z1.centroid) AS origin_geojson,
-                ST_AsGeoJSON(z2.centroid) AS dest_geojson,
-                hour,
-                avg_trips
+                z1.lon AS origin_lon,
+                z1.lat AS origin_lat,
+                z2.lon AS dest_lon,
+                z2.lat AS dest_lat,
+                td.hour,
+                td.avg_trips
             FROM gold_typical_day_od_hourly td
-            JOIN silver_zones z1 ON td.origin_id = z1.id
-            JOIN silver_zones z2 ON td.destination_id = z2.id
-            WHERE date BETWEEN '{start_date}' AND '{end_date}'
-                AND ST_Within(
-                    z1.centroid,
-                    ST_GeomFromText('{polygon_wkt}')
-                )
-                AND ST_Within(
-                    z2.centroid,
-                    ST_GeomFromText('{polygon_wkt}')
-                )
+            JOIN filtered_zones z1 ON td.origin_id = z1.id
+            JOIN filtered_zones z2 ON td.destination_id = z2.id
+            WHERE td.date BETWEEN '{start_date}' AND '{end_date}'
         )
         SELECT
             origin, 
             destination,
-            (origin_geojson::JSON->'coordinates')[0] AS origin_lon,
-            (origin_geojson::JSON->'coordinates')[1] AS origin_lat,
-            (dest_geojson::JSON->'coordinates')[0] AS dest_lon,
-            (dest_geojson::JSON->'coordinates')[1] AS dest_lat,
+            origin_lon,
+            origin_lat,
+            dest_lon,
+            dest_lat,
             AVG(avg_trips) AS avg_trips
         FROM od_base
-        WHERE avg_trips >= 10
-        GROUP BY origin, destination, origin_lon, origin_lat, dest_lon, dest_lat;
+        GROUP BY origin, destination, origin_lon, origin_lat, dest_lon, dest_lat
+        HAVING AVG(avg_trips) >= 10;
     """
     
     # Store extra env vars in context for exec_gcp_ducklake_executor
@@ -301,17 +313,25 @@ def GOLD_generate_top_origins(
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
         
-        WITH od_filtered AS (
+        -- Pre-calcular el polígono una sola vez
+        WITH polygon_filter AS (
+            SELECT ST_GeomFromText('{polygon_wkt}') AS polygon
+        ),
+        -- Pre-filtrar zonas que están dentro del polígono
+        filtered_zones AS (
+            SELECT z.id, z.nombre
+            FROM silver_zones z
+            CROSS JOIN polygon_filter p
+            WHERE ST_Within(z.centroid, p.polygon)
+        ),
+        -- Filtrar datos y hacer JOIN solo con zonas filtradas
+        od_filtered AS (
             SELECT
                 z1.nombre AS origin,
-                avg_trips
+                td.avg_trips
             FROM gold_typical_day_od_hourly td
-            JOIN silver_zones z1 ON td.origin_id = z1.id
-            WHERE date BETWEEN '{start_date}' AND '{end_date}'
-            AND ST_Within(
-                    z1.centroid,
-                    ST_GeomFromText('{polygon_wkt}')
-            )
+            JOIN filtered_zones z1 ON td.origin_id = z1.id
+            WHERE td.date BETWEEN '{start_date}' AND '{end_date}'
         )
         SELECT
             origin,
@@ -473,18 +493,26 @@ def GOLD_generate_hourly_distribution(
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
         
-        WITH od_filtered AS (
+        -- Pre-calcular el polígono una sola vez
+        WITH polygon_filter AS (
+            SELECT ST_GeomFromText('{polygon_wkt}') AS polygon
+        ),
+        -- Pre-filtrar zonas que están dentro del polígono
+        filtered_zones AS (
+            SELECT z.id, z.nombre
+            FROM silver_zones z
+            CROSS JOIN polygon_filter p
+            WHERE ST_Within(z.centroid, p.polygon)
+        ),
+        -- Filtrar datos y hacer JOIN solo con zonas filtradas
+        od_filtered AS (
             SELECT
                 z1.nombre AS municipality,
-                hour,
-                avg_trips
+                td.hour,
+                td.avg_trips
             FROM gold_typical_day_od_hourly td
-                JOIN silver_zones z1 ON td.origin_id = z1.id
-            WHERE date BETWEEN '{start_date}' AND '{end_date}'
-            AND ST_Within(
-                z1.centroid,
-                ST_GeomFromText('{polygon_wkt}')
-            )
+            JOIN filtered_zones z1 ON td.origin_id = z1.id
+            WHERE td.date BETWEEN '{start_date}' AND '{end_date}'
         )
         SELECT
             municipality,
