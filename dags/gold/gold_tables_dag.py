@@ -2,6 +2,7 @@
 DAG for Gold layer table creation.
 
 This DAG creates the gold layer tables for business questions analysis.
+Uses incremental processing: only processes dates that are not yet in the gold tables.
 Tables with heavy SQL computations use Cloud Run when available for 
 better performance.
 """
@@ -9,10 +10,14 @@ better performance.
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.models import Param
 from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.sdk import TaskGroup
 
 from gold.tasks import (
-    GOLD_typical_day,
+    GOLD_typical_day_create_table,
+    GOLD_typical_day_get_date_batches,
+    GOLD_typical_day_process_batch,
     GOLD_gravity_model,
     GOLD_functional_type
 )
@@ -22,24 +27,48 @@ with DAG(
     start_date=datetime(2025, 12, 1),
     catchup=False,
     tags=["gold", "create-tables"],
-    description="Gold layer tables creation - Has to be manually triggered to generate the gold tables",
+    description="Gold layer tables creation - Uses incremental processing to only process new dates",
+    params={
+        "batch_size": Param(
+            type="integer",
+            default=30,
+            description="Número de fechas a procesar por batch en gold_typical_day_od_hourly (default: 30)"
+        ),
+    },
     default_args={
         "retries": 3,
         "retry_delay": timedelta(seconds=30),
-    }
+    },
+    max_active_tasks=10,
 ) as dag:
     
     start = EmptyOperator(task_id="start")
     done = EmptyOperator(task_id="done")
 
-    # Question 1: Typical Day (uses Cloud Run for heavy SQL)
-    typ_day = GOLD_typical_day.override(task_id="typical_day")()
+    # Question 1: Typical Day (incremental processing)
+    with TaskGroup(group_id="typical_day_batches") as typ_day_group:
+        typ_day_create_table = GOLD_typical_day_create_table.override(
+            task_id="create_table"
+        )()
+        
+        typ_day_date_batches = GOLD_typical_day_get_date_batches.override(
+            task_id="get_batches"
+        )(batch_size="{{ params.batch_size }}")
+        
+        typ_day_process_batches = (
+            GOLD_typical_day_process_batch.override(
+                task_id="process_batch"
+            )
+            .expand(date_batch=typ_day_date_batches)
+        )
+        
+        typ_day_create_table >> typ_day_date_batches >> typ_day_process_batches
     
-    # Question 2: Gravity Model (calculates best k and creates table in one task)
+    # Question 2: Gravity Model (still uses CREATE OR REPLACE - calculates best k)
     grav_model = GOLD_gravity_model.override(task_id="gravity_model")()
 
-    # Question 3: Functional Type (runs locally - requires sklearn)
+    # Question 3: Functional Type (runs locally - requires sklearn, no date column)
     func_type = GOLD_functional_type.override(task_id="functional_type")()
 
     # Dependencies
-    start >> [typ_day, grav_model, func_type] >> done
+    start >> [typ_day_group, grav_model, func_type] >> done
