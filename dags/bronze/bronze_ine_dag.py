@@ -12,12 +12,10 @@ from airflow.models import Param
 from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
 
-# Import infrastructure setup TaskGroup
 from misc.infra import tg_infra
 
 from utils.utils import get_default_pool_slots
 
-# Import Bronze INE tasks
 from bronze.tasks.ine import (
     BRONZE_ine_municipios_urls,
     BRONZE_ine_municipios_create_table,
@@ -289,19 +287,16 @@ with DAG(
         "retries": 3,
         "retry_delay": timedelta(seconds=30),
     },
-    max_active_tasks=4,  # Máximo de tareas concurrentes en el DAG (permite paralelismo general)
-    max_active_runs=1,    # Solo 1 ejecución del DAG a la vez
+    max_active_tasks=4,
+    max_active_runs=1,
 ) as dag:
-    # Infrastructure setup
     infra = tg_infra()
 
-    # TaskGroups
     municipios_group = create_tg_municipios()
     empresas_group = create_tg_empresas()
     poblacion_group = create_tg_poblacion()
     renta_group = create_tg_renta()
 
-    # Infrastructure -> All INE TaskGroups
     infra.bucket >> [
         municipios_group.start,
         empresas_group.start,
@@ -309,19 +304,16 @@ with DAG(
         renta_group.start,
     ]
 
-    # Define asset for this DAG
     bronze_ine_asset = Dataset("bronze://ine/done")
     
-    # Done marker - last task before DAG completion
-    # This task produces the asset, triggering the silver DAG when it completes successfully
     done = EmptyOperator(
         task_id="done",
-        outlets=[bronze_ine_asset],  # Publish asset when task completes successfully
-        trigger_rule="none_failed"  # Wait for tasks that execute (skipped ones are ignored)
+        outlets=[bronze_ine_asset],
+        trigger_rule="none_failed"
     )
     
-    municipios_group.insert[0] >> done  # actual insert (if URLs exist)
-    municipios_group.insert[1] >> done  # skipped insert (if no URLs)
+    municipios_group.insert[0] >> done
+    municipios_group.insert[1] >> done
     empresas_group.insert[0] >> done
     empresas_group.insert[1] >> done
     poblacion_group.insert[0] >> done

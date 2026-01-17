@@ -1,14 +1,4 @@
-"""
-MITMA-specific Utility functions for Bronze layer.
-Contains helper functions for URL fetching and zoning data processing.
-
-V2 Features:
-- Retry with exponential backoff for transient errors
-- Streaming download for memory efficiency
-- Batch download with parallel processing
-- Optimized MERGE with deferred deduplication
-- Partitioned tables by year/month/day
-"""
+"""MITMA-specific utility functions for Bronze layer data ingestion."""
 
 from utils.utils import get_ducklake_connection
 import re
@@ -34,20 +24,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 LAKE_LAYER = 'bronze'
 RUSTFS_RAW_BUCKET = 'mitma-raw'  # S3 bucket names cannot contain underscores, use hyphen instead
-
-# ============================================================================
-# V2: RETRY & RESILIENCE CONSTANTS
-# ============================================================================
+ 
 MAX_RETRIES = 5
-INITIAL_BACKOFF = 2  # seconds
-MAX_BACKOFF = 120  # seconds
-CHUNK_SIZE = 8 * 1024 * 1024  # 8MB chunks for streaming
-DOWNLOAD_TIMEOUT = 600  # 10 minutes timeout for large files
-
-
-# ============================================================================
-# V2: RETRY DECORATOR WITH EXPONENTIAL BACKOFF
-# ============================================================================
+INITIAL_BACKOFF = 2
+MAX_BACKOFF = 120
+CHUNK_SIZE = 8 * 1024 * 1024
+DOWNLOAD_TIMEOUT = 600
 def retry_with_backoff(
     max_retries: int = MAX_RETRIES,
     initial_backoff: float = INITIAL_BACKOFF,
@@ -61,15 +43,7 @@ def retry_with_backoff(
         OSError,
     )
 ):
-    """
-    Decorator for retry with exponential backoff.
-    
-    Parameters:
-    - max_retries: Maximum number of retry attempts
-    - initial_backoff: Initial wait time in seconds
-    - max_backoff: Maximum wait time in seconds
-    - retryable_exceptions: Tuple of exception types to retry on
-    """
+    """Decorator for retry with exponential backoff on transient errors."""
     def decorator(func: Callable):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -81,7 +55,6 @@ def retry_with_backoff(
                     last_exception = e
                     if attempt < max_retries - 1:
                         backoff = min(initial_backoff * (2 ** attempt), max_backoff)
-                        # Add jitter to avoid thundering herd
                         import random
                         jitter = random.uniform(0, backoff * 0.1)
                         wait_time = backoff + jitter
@@ -95,23 +68,9 @@ def retry_with_backoff(
     return decorator
 
 
-# ============================================================================
-# V2: STREAMING DOWNLOAD WITH RETRY (to disk)
-# ============================================================================
 @retry_with_backoff()
 def download_url_to_file(url: str, file_path: str, timeout: int = DOWNLOAD_TIMEOUT) -> int:
-    """
-    Downloads a file using streaming to disk with automatic retry.
-    Memory efficient - writes directly to disk without accumulating in memory.
-    
-    Parameters:
-    - url: URL to download
-    - file_path: Path to save the file
-    - timeout: Timeout in seconds
-    
-    Returns:
-    - Total bytes downloaded
-    """
+    """Downloads a file using streaming to disk with automatic retry."""
     req = urllib.request.Request(url, headers={"User-Agent": "MITMA-DuckLake-Loader"})
     
     total_size = 0
@@ -129,7 +88,6 @@ def download_url_to_file(url: str, file_path: str, timeout: int = DOWNLOAD_TIMEO
                 f.write(chunk)
                 total_size += len(chunk)
                 
-                # Log progress every 10MB
                 if expected_size and total_size - last_progress_log >= 10 * 1024 * 1024:
                     progress = (total_size / expected_size) * 100
                     print(f"[DOWNLOAD] Progress: {progress:.1f}% ({total_size:,} / {expected_size:,} bytes)")
@@ -139,22 +97,8 @@ def download_url_to_file(url: str, file_path: str, timeout: int = DOWNLOAD_TIMEO
     return total_size
 
 
-# ============================================================================
-# V2: IMPROVED DOWNLOAD TO RUSTFS WITH STREAMING (memory efficient)
-# ============================================================================
 def download_url_to_rustfs_v2(url: str, dataset: str, zone_type: str) -> str:
-    """
-    V2: Improved version with streaming download to disk and automatic retry.
-    Memory efficient - uses temporary file on disk instead of loading into memory.
-    
-    Parameters:
-    - url: URL of the file to download
-    - dataset: Dataset type ('od', 'people_day', 'overnight_stay')
-    - zone_type: Zone type ('distritos', 'municipios', 'gau')
-    
-    Returns:
-    - S3 path in format s3://mitma-raw/{dataset}/{zone_type}/{filename}
-    """
+    """Downloads a file to RustFS S3 using streaming (memory efficient)."""
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
     
     parsed_url = urllib.parse.urlparse(url)
@@ -178,12 +122,10 @@ def download_url_to_rustfs_v2(url: str, dataset: str, zone_type: str) -> str:
     except Exception as e:
         print(f"[DOWNLOAD_V2] Warning checking bucket: {e}")
     
-    # Check if file already exists (idempotent)
     if s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET):
         print(f"[DOWNLOAD_V2] File already exists: {s3_path}")
         return s3_path
     
-    # Download to temporary file on disk (memory efficient)
     temp_file = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp:
@@ -192,7 +134,6 @@ def download_url_to_rustfs_v2(url: str, dataset: str, zone_type: str) -> str:
         print(f"[DOWNLOAD_V2] Starting streaming download to disk: {url}")
         total_bytes = download_url_to_file(url, temp_file)
         
-        # Upload to RustFS from disk file
         print(f"[DOWNLOAD_V2] Uploading {total_bytes:,} bytes to {s3_path}")
         s3_hook.load_file(
             filename=temp_file,
@@ -202,7 +143,6 @@ def download_url_to_rustfs_v2(url: str, dataset: str, zone_type: str) -> str:
         )
         print(f"[DOWNLOAD_V2] Successfully uploaded to {s3_path}")
     finally:
-        # Always clean up temporary file
         if temp_file and os.path.exists(temp_file):
             try:
                 os.unlink(temp_file)
@@ -212,27 +152,13 @@ def download_url_to_rustfs_v2(url: str, dataset: str, zone_type: str) -> str:
     return s3_path
 
 
-# ============================================================================
-# V2: BATCH DOWNLOAD WITH PARALLEL PROCESSING
-# ============================================================================
 def download_batch_to_rustfs(
     urls: List[str],
     dataset: str,
     zone_type: str,
     max_parallel: int = 4
 ) -> Dict[str, str]:
-    """
-    V2: Downloads multiple URLs in parallel to RustFS.
-    
-    Parameters:
-    - urls: List of URLs to download
-    - dataset: Dataset type
-    - zone_type: Zone type
-    - max_parallel: Maximum parallel downloads (default: 4)
-    
-    Returns:
-    - Dict mapping original_url -> s3_path for successful downloads
-    """
+    """Downloads multiple URLs in parallel to RustFS S3."""
     results = {}
     failed = []
     
@@ -245,7 +171,6 @@ def download_batch_to_rustfs(
     
     print(f"[BATCH_DOWNLOAD] Starting parallel download of {len(urls)} URLs (max_parallel={max_parallel})")
     
-    # Timeout per download: DOWNLOAD_TIMEOUT + 60 seconds buffer for S3 upload
     per_download_timeout = DOWNLOAD_TIMEOUT + 60
     
     with ThreadPoolExecutor(max_workers=max_parallel) as executor:
@@ -253,7 +178,6 @@ def download_batch_to_rustfs(
         
         for i, future in enumerate(as_completed(futures), 1):
             try:
-                # Add timeout to prevent hanging - each download should complete within per_download_timeout
                 url, s3_path, error = future.result(timeout=per_download_timeout)
                 if error:
                     print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Failed: {os.path.basename(url)} - {error}")
@@ -266,7 +190,6 @@ def download_batch_to_rustfs(
                 error_msg = f"Download timeout after {per_download_timeout}s"
                 print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Timeout: {os.path.basename(url)} - {error_msg}")
                 failed.append((url, error_msg))
-                # Cancel the future if possible
                 future.cancel()
             except Exception as e:
                 url = futures.get(future, "unknown")
@@ -278,7 +201,7 @@ def download_batch_to_rustfs(
     
     if failed:
         print(f"[BATCH_DOWNLOAD] Failed URLs:")
-        for url, error in failed[:5]:  # Show first 5 failures
+        for url, error in failed[:5]:
             print(f"  - {os.path.basename(url)}: {error}")
         if len(failed) > 5:
             print(f"  ... and {len(failed) - 5} more")
@@ -286,19 +209,8 @@ def download_batch_to_rustfs(
     return results
 
 
-# ============================================================================
-# V2: BATCH DELETE FROM RUSTFS
-# ============================================================================
 def delete_batch_from_rustfs(s3_paths: List[str]) -> Dict[str, bool]:
-    """
-    V2: Deletes multiple files from RustFS in batch.
-    
-    Parameters:
-    - s3_paths: List of S3 paths to delete
-    
-    Returns:
-    - Dict mapping s3_path -> success (True/False)
-    """
+    """Deletes multiple files from RustFS S3 in batch."""
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
     
     results = {}
@@ -336,19 +248,8 @@ def delete_batch_from_rustfs(s3_paths: List[str]) -> Dict[str, bool]:
     return results
 
 
-# ============================================================================
-# V2: OPTIMIZED BULK INSERT (NO MERGE, DEFERRED DEDUP)
-# ============================================================================
 def bulk_insert_from_csv(table_name: str, urls: List[str], deduplicate: bool = False):
-    """
-    V2: Bulk inserts multiple CSVs at once. Much faster than individual MERGEs.
-    Optionally deduplicates at the end.
-    
-    Parameters:
-    - table_name: Table name (without 'bronze_' prefix)
-    - urls: List of CSV URLs (can be S3 paths or HTTP URLs)
-    - deduplicate: If True, removes duplicates after insert
-    """
+    """Bulk inserts multiple CSVs at once with optional deduplication."""
     full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
     
@@ -358,7 +259,6 @@ def bulk_insert_from_csv(table_name: str, urls: List[str], deduplicate: bool = F
     
     url_list_str = "[" + ", ".join([f"'{u}'" for u in urls]) + "]"
     
-    # Direct INSERT (no MERGE) - much faster
     insert_sql = f"""
         INSERT INTO {full_table_name}
         SELECT 
@@ -388,11 +288,9 @@ def bulk_insert_from_csv(table_name: str, urls: List[str], deduplicate: bool = F
         dedup_start = time.time()
         
         try:
-            # Get data columns for deduplication
             data_columns = _get_data_columns(full_table_name)
             cols_str = ", ".join(data_columns)
             
-            # Use window function to find and remove duplicates
             dedup_sql = f"""
                 DELETE FROM {full_table_name}
                 WHERE rowid IN (
@@ -411,36 +309,21 @@ def bulk_insert_from_csv(table_name: str, urls: List[str], deduplicate: bool = F
             print(f"[BULK_INSERT] Warning: Deduplication failed (non-critical): {e}")
 
 
-# ============================================================================
-# V2: CREATE PARTITIONED TABLE
-# ============================================================================
 def create_partitioned_table_from_csv(
     table_name: str,
     url: str,
     partition_by_date: bool = True,
     fecha_as_timestamp: bool = False
 ):
-    """
-    V3: Creates a DuckDB table with partitioning by year/month/day.
-    Simplified: just CREATE TABLE IF NOT EXISTS and ALTER for partitioning.
-    
-    Parameters:
-    - table_name: Table name (without 'bronze_' prefix)
-    - url: First CSV URL to infer schema
-    - partition_by_date: If True, partitions by year/month/day of 'fecha' column
-    - fecha_as_timestamp: If True, converts fecha column to TIMESTAMP and partitions by timestamp functions
-    """
+    """Creates a DuckDB table with optional partitioning by year/month/day."""
     full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
     
     print(f"[CREATE_TABLE_V3] Creating table {full_table_name} with schema from {os.path.basename(url)}")
     
-    # Build CREATE TABLE query - infer schema from CSV
     source_sql = _get_csv_source_query([url])
     
     if fecha_as_timestamp:
-        # Create table with fecha as TIMESTAMP
-        # Note: source_sql already includes source_file and loaded_at from _get_csv_source_query
         create_table_sql = f"""
             CREATE TABLE IF NOT EXISTS {full_table_name} AS
             SELECT 
@@ -450,7 +333,6 @@ def create_partitioned_table_from_csv(
             LIMIT 0;
         """
     else:
-        # Create table with fecha as VARCHAR
         create_table_sql = f"""
             CREATE TABLE IF NOT EXISTS {full_table_name} AS
             {source_sql}
@@ -459,12 +341,9 @@ def create_partitioned_table_from_csv(
     
     con.execute(create_table_sql)
     
-    # Apply partitioning if requested
     if partition_by_date:
         try:
             if fecha_as_timestamp:
-                # Ensure fecha column is TIMESTAMP before partitioning
-                # Sometimes DuckDB may not infer the type correctly with LIMIT 0
                 ensure_timestamp_sql = f"""
                     ALTER TABLE {full_table_name} 
                     ALTER COLUMN fecha TYPE TIMESTAMP;
@@ -473,11 +352,8 @@ def create_partitioned_table_from_csv(
                     con.execute(ensure_timestamp_sql)
                     print(f"[CREATE_TABLE_V3] Ensured fecha column is TIMESTAMP")
                 except Exception as e:
-                    # Column might already be TIMESTAMP or table might not exist yet
                     print(f"[CREATE_TABLE_V3] Note: Could not alter fecha type (may already be TIMESTAMP): {e}")
                 
-                # Partition by year/month/day of fecha (TIMESTAMP) - same approach as silver
-                # This works correctly when fecha is TIMESTAMP (no CAST needed in partition definition)
                 partition_sql = f"""
                     ALTER TABLE {full_table_name} 
                     SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));
@@ -500,26 +376,12 @@ def create_partitioned_table_from_csv(
     return {'status': 'created', 'table_name': full_table_name, 'partitioned': partition_by_date, 'fecha_as_timestamp': fecha_as_timestamp}
 
 
-# ============================================================================
-# V2: FINALIZE TABLE (ANALYZE ONCE AT END)
-# ============================================================================
 def finalize_table(table_name: str, run_analyze: bool = True) -> Dict[str, Any]:
-    """
-    V2: Finalizes a table after bulk operations.
-    Runs ANALYZE once at the end instead of after each insert.
-    
-    Parameters:
-    - table_name: Full table name (with 'bronze_' prefix)
-    - run_analyze: Whether to run ANALYZE
-    
-    Returns:
-    - Dict with table stats
-    """
+    """Finalizes a table after bulk operations and returns stats."""
     con = get_ducklake_connection()
     
     print(f"[FINALIZE] Finalizing table {table_name}")
     
-    # Get table stats
     try:
         count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
         print(f"[FINALIZE] Table {table_name} has {count:,} records")
@@ -529,20 +391,8 @@ def finalize_table(table_name: str, run_analyze: bool = True) -> Dict[str, Any]:
         return {'status': 'success', 'table_name': table_name}
 
 
-# ============================================================================
-# V2: CREATE URL BATCHES
-# ============================================================================
 def create_url_batches(urls: List[str], batch_size: int = 10) -> List[List[str]]:
-    """
-    V2: Divides a list of URLs into batches for parallel processing.
-    
-    Parameters:
-    - urls: List of URLs
-    - batch_size: Number of URLs per batch
-    
-    Returns:
-    - List of URL batches
-    """
+    """Divides a list of URLs into batches for parallel processing."""
     if not urls:
         return []
     
@@ -552,9 +402,6 @@ def create_url_batches(urls: List[str], batch_size: int = 10) -> List[List[str]]
     return batches
 
 
-# ============================================================================
-# V3: COPY BATCH TO TABLE WITH MULTI-THREADING
-# ============================================================================
 def copy_batch_to_table(
     table_name: str,
     s3_paths: List[str],
@@ -563,25 +410,7 @@ def copy_batch_to_table(
     fecha_as_timestamp: bool = False,
     **context
 ) -> Dict[str, Any]:
-    """
-    V4: Efficiently copies a batch of CSV files from S3/RustFS to DuckDB table using INSERT INTO.
-    Builds complete SQL query and uses executor (Cloud Run) instead of ingestor.
-    Uses multiple threads internally and read_csv with multiple URLs for faster processing.
-    
-    This is faster than MERGE because it uses INSERT INTO (no deduplication during insert).
-    Deduplication should be done separately if needed.
-    
-    Parameters:
-    - table_name: Full table name (with 'bronze_' prefix)
-    - s3_paths: List of S3 paths to read from RustFS
-    - original_urls: Optional list of original HTTP URLs (used for source_file column)
-    - threads: Number of threads to use for DuckDB internal parallelization
-    - fecha_as_timestamp: If True, parses fecha from VARCHAR to TIMESTAMP
-    - **context: Airflow context for execute_sql_or_cloud_run
-    
-    Returns:
-    - Dict with results: {'success': int, 'failed': int, 'errors': List[str]}
-    """
+    """Copies a batch of CSV files from S3/RustFS to DuckDB using INSERT INTO."""
     from utils.gcp import execute_sql_or_cloud_run
     
     full_table_name = table_name if table_name.startswith('bronze_') else f'bronze_{table_name}'
@@ -589,7 +418,6 @@ def copy_batch_to_table(
     if not s3_paths:
         return {'success': 0, 'failed': 0, 'errors': []}
     
-    # Use original_urls for source_file if provided, otherwise use s3_paths
     if original_urls is None:
         original_urls = s3_paths
     
@@ -599,8 +427,6 @@ def copy_batch_to_table(
     
     start_time = time.time()
     
-    # Build SQL query - use read_csv with S3 paths
-    # We'll use UNION ALL to ensure proper source_file mapping
     union_parts = []
     for i, s3_path in enumerate(s3_paths):
         source_file_value = original_urls[i] if i < len(original_urls) else s3_path
@@ -635,7 +461,6 @@ def copy_batch_to_table(
                 )
             """)
     
-    # Build complete SQL query with UNION ALL and optimizations
     sql_query = f"""
         SET threads={threads};
         SET worker_threads={threads};
@@ -646,12 +471,10 @@ def copy_batch_to_table(
     """
     
     try:
-        # Execute SQL using executor (Cloud Run or local)
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         success_count = len(s3_paths)
         print(f"[COPY_BATCH] Successfully processed {len(s3_paths)} files using executor")
     except Exception as e:
-        # If batch insert fails, log error
         error_msg = f"Error copying batch: {str(e)}"
         print(f"[COPY_BATCH] Batch insert failed: {error_msg}")
         return {
@@ -679,20 +502,7 @@ def copy_from_csv_batch(
     fecha_as_timestamp: bool = False,
     **context
 ) -> Dict[str, Any]:
-    """
-    V3: Processes a batch of downloaded files using COPY (INSERT INTO) with multi-threading.
-    Uses executor (Cloud Run) instead of ingestor.
-    
-    Parameters:
-    - table_name: Table name (without 'bronze_' prefix)
-    - batch: Dict with 'downloaded' list containing {'original_url': str, 's3_path': str}
-    - threads: Number of threads for parallel processing
-    - fecha_as_timestamp: If True, parses fecha from VARCHAR to TIMESTAMP
-    - **context: Airflow context for execute_sql_or_cloud_run
-    
-    Returns:
-    - Dict with processing results
-    """
+    """Processes a batch of downloaded files using INSERT INTO with multi-threading."""
     full_table_name = f'bronze_{table_name}'
     downloaded = batch.get('downloaded', [])
     batch_index = batch.get('batch_index', 0)
@@ -729,21 +539,9 @@ def copy_from_csv_batch(
 
 
 def get_mitma_urls(dataset, zone_type, start_date, end_date):
-    """
-    Fetches MITMA URLs from RSS feed and filters by dataset, zone type, and date range.
-
-    Parameters:
-    - dataset: 'od', 'people_day', 'overnight_stay'
-    - zone_type: 'distritos', 'municipios', 'gau'
-    - start_date: 'YYYY-MM-DD'
-    - end_date: 'YYYY-MM-DD'
-
-    Returns:
-    - List of URLs matching the criteria
-    """
+    """Fetches MITMA URLs from RSS feed filtered by dataset, zone type, and date range."""
     rss_url = "https://movilidad-opendata.mitma.es/RSS.xml"
 
-    # Simple mapping: dataset -> (url_path, file_prefix)
     dataset_map = {
         "od": ("viajes", "Viajes"),
         "people_day": ("personas", "Personas_dia"),
@@ -759,40 +557,30 @@ def get_mitma_urls(dataset, zone_type, start_date, end_date):
 
     dataset_path, file_prefix = dataset_map[dataset]
 
-    # Construct file pattern: {Prefix}_{zone} (GAU is uppercase in files)
     zone_suffix = "GAU" if zone_type == "gau" else zone_type
     file_pattern = f"{file_prefix}_{zone_suffix}"
 
-    # Build dynamic regex pattern
-    # Pattern: https://.../por-{zone}/viajes/ficheros-diarios/YYYY-MM/YYYYMMDD_{FilePattern}.csv.gz
     pattern = rf'(https?://[^\s"<>]*/estudios_basicos/por-{zone_type}/{dataset_path}/ficheros-diarios/\d{{4}}-\d{{2}}/(\d{{8}})_{file_pattern}\.csv\.gz)'
 
-    # Fetch RSS with User-Agent to avoid 403
     req = urllib.request.Request(
         rss_url, headers={"User-Agent": "MITMA-DuckLake-Loader"})
     txt = urllib.request.urlopen(req).read().decode("utf-8", "ignore")
 
-    # Find all matches (case-insensitive for por-gau vs por-GAU)
     matches = re.findall(pattern, txt, re.I)
 
-    # Remove duplicates using set (RSS often has duplicate entries)
     unique_matches = list(set(matches))
 
-    # Convert date range to comparable format
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
-    # Filter by date range and sort
     filtered_urls = []
     for url, date_str in unique_matches:
         file_date = datetime.strptime(date_str, "%Y%m%d")
         if start_dt <= file_date <= end_dt:
             filtered_urls.append((url, date_str))
 
-    # Sort by date ascending
     filtered_urls.sort(key=lambda x: x[1])
 
-    # Extract just the URLs
     urls = [url for url, _ in filtered_urls]
 
     print(
@@ -805,17 +593,7 @@ def get_mitma_urls(dataset, zone_type, start_date, end_date):
 
 
 def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
-    """
-    Descarga un archivo desde una URL y lo sube a RustFS bucket mitma-raw.
-    
-    Parameters:
-    - url: URL del archivo a descargar
-    - dataset: Dataset tipo ('od', 'people_day', 'overnight_stay')
-    - zone_type: Tipo de zona ('distritos', 'municipios', 'gau')
-    
-    Returns:
-    - Ruta S3 en formato s3://mitma-raw/{dataset}/{zone_type}/{filename}
-    """
+    """Downloads a file from URL and uploads to RustFS S3 (legacy version, use download_url_to_rustfs_v2)."""
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
         
     parsed_url = urllib.parse.urlparse(url)
@@ -824,7 +602,6 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
     if not filename:
         raise ValueError(f"Could not extract filename from URL: {url}")
     
-    # Construir ruta S3: mitma-raw/{dataset}/{zone_type}/{filename}
     s3_key = f"{dataset}/{zone_type}/{filename}"
     s3_path = f"s3://{RUSTFS_RAW_BUCKET}/{s3_key}"
     
@@ -877,15 +654,7 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
 
 
 def delete_file_from_rustfs(s3_path: str) -> bool:
-    """
-    Elimina un archivo del bucket RustFS mitma-raw.
-    
-    Parameters:
-    - s3_path: Ruta S3 completa en formato s3://bucket/key
-    
-    Returns:
-    - True si el archivo fue eliminado exitosamente o no existía, False en caso de error
-    """
+    """Deletes a single file from RustFS S3 bucket."""
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
     print(f"[DELETE] Attempting to delete file from RustFS: {s3_path}")
     
@@ -893,8 +662,7 @@ def delete_file_from_rustfs(s3_path: str) -> bool:
         print(f"[DELETE] Invalid S3 path format: {s3_path}")
         return False
     
-    # Extraer bucket y key de s3://bucket/key
-    path_without_prefix = s3_path[5:]  # remover "s3://"
+    path_without_prefix = s3_path[5:]
     parts = path_without_prefix.split("/", 1)
     
     if len(parts) != 2:
@@ -904,7 +672,6 @@ def delete_file_from_rustfs(s3_path: str) -> bool:
     bucket_name = parts[0]
     s3_key = parts[1]
     
-    # Verificar que el bucket sea mitma-raw (seguridad)
     if bucket_name != RUSTFS_RAW_BUCKET:
         print(f"[DELETE] Only files from {RUSTFS_RAW_BUCKET} bucket can be deleted. Got: {bucket_name}")
         return False
@@ -921,22 +688,14 @@ def delete_file_from_rustfs(s3_path: str) -> bool:
             return True
         else:
             print(f"[DELETE] File does not exist in RustFS: {s3_path} (may have been already deleted)")
-            return True  # Consideramos esto como éxito (idempotente)
+            return True
     except Exception as e:
         print(f"[DELETE] Error deleting file from RustFS: {e}")
         return False
 
 
 def get_mitma_zoning_urls(zone_type):
-    """
-    Fetches MITMA Zoning URLs (Shapefiles + CSVs) from RSS feed using Regex.
-
-    Parameters:
-    - zone_type: 'distritos', 'municipios', 'gau'
-
-    Returns:
-    - Dictionary with shapefile components, nombres URL, and poblacion URL
-    """
+    """Fetches MITMA zoning URLs (Shapefiles + CSVs) from RSS feed."""
     rss_url = "https://movilidad-opendata.mitma.es/RSS.xml"
 
     if zone_type not in ["distritos", "municipios", "gau"]:
@@ -946,7 +705,6 @@ def get_mitma_zoning_urls(zone_type):
     folder_suffix = "GAU" if zone_type == "gau" else zone_type
     file_suffix = "gaus" if zone_type == "gau" else zone_type
 
-    # --- REGEX PATTERNS ---
     shp_pattern = rf'(https?://[^\s"<>]*/zonificacion/zonificacion_{folder_suffix}/[^"<>]+\.(?:shp|shx|dbf|prj))'
     csv_pattern = rf'(https?://[^\s"<>]*/zonificacion/zonificacion_{folder_suffix}/(?:nombres|poblacion)_{file_suffix}\.csv)'
 
@@ -989,12 +747,12 @@ def get_mitma_zoning_urls(zone_type):
 
 
 def clean_id(series):
-    """Normaliza ID a string limpio (sin .0, sin espacios)."""
+    """Normalizes ID to clean string (removes .0 suffix and whitespace)."""
     return series.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
 
 
 def clean_poblacion(series):
-    """Limpia enteros de población (quita puntos y decimales)."""
+    """Cleans population integers (removes dots and decimals)."""
     return (series.astype(str)
             .str.replace('.', '', regex=False)
             .str.replace(r'\.0$', '', regex=True)
@@ -1003,16 +761,7 @@ def clean_poblacion(series):
 
 
 def get_mitma_zoning_dataset(zone_type='municipios'):
-    """
-    Orquesta la descarga, limpieza y fusión de datos maestros.
-    Retorna un GeoDataFrame listo para ingesta.
-
-    Parameters:
-    - zone_type: 'distritos', 'municipios', 'gau'
-
-    Returns:
-    - GeoDataFrame with zoning data
-    """
+    """Downloads, cleans and merges MITMA zoning data into a GeoDataFrame."""
     urls = get_mitma_zoning_urls(zone_type)
 
     print(f"Generando dataset maestro para: {zone_type.upper()}")
@@ -1048,7 +797,7 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
         if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
             gdf = gdf.to_crs("EPSG:4326")
 
-        print("   🔗 Integrando metadatos (Nombres y Población)...")
+        print("   🔗 Integrating metadata (Names and Population)...")
         df_aux = pd.DataFrame(columns=['ID'])
 
         aux_config = [
@@ -1070,7 +819,6 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
             try:
                 r = requests.get(cfg['url'], timeout=10)
                 if r.status_code == 200:
-                    # Leer CSV crudo
                     df_t = pd.read_csv(
                         io.BytesIO(r.content),
                         sep='|',
@@ -1099,9 +847,8 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
 
                     print(f"      {cfg['type'].capitalize()} OK")
             except Exception as e:
-                print(f"      Fallo procesando {cfg['type']}: {e}")
+                print(f"      Failed processing {cfg['type']}: {e}")
 
-        # --- C. Merge Final ---
         if not df_aux.empty:
             gdf = gdf.merge(df_aux, on='ID', how='left')
 
@@ -1120,21 +867,13 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
 
 
 def load_zonificacion(con, zone_type, lake_layer='bronze'):
-    """
-    Load zonification data into DuckDB for the specified type.
-
-    Parameters:
-    - con: DuckDB connection
-    - zone_type: 'distritos', 'municipios', 'gau'
-    - lake_layer: layer name (default: 'bronze')
-    """
+    """Loads zonification data into DuckDB for the specified zone type."""
     df = get_mitma_zoning_dataset(zone_type)
 
     if df is None or df.empty:
         print(f"No data to load for {zone_type}")
         return
 
-    # Convert all columns to string (including geometry)
     for col in df.columns:
         df[col] = df[col].astype(str)
 
@@ -1174,9 +913,7 @@ def load_zonificacion(con, zone_type, lake_layer='bronze'):
 
 
 def _get_data_columns(table_name):
-    """
-    Introspección: Obtiene las columnas de negocio (excluyendo auditoría).
-    """
+    """Gets business columns excluding audit columns (loaded_at, source_file, source_url)."""
     audit_cols = "('loaded_at', 'source_file', 'source_url')"
 
     con = get_ducklake_connection()
@@ -1191,9 +928,7 @@ def _get_data_columns(table_name):
 
 
 def _build_merge_condition(columns):
-    """
-    Construye una cláusula ON robusta que maneja NULLs correctamente.
-    """
+    """Builds a robust ON clause that handles NULLs correctly."""
     return " AND ".join([
         f"target.{col} IS NOT DISTINCT FROM source.{col}"
         for col in columns
@@ -1201,10 +936,7 @@ def _build_merge_condition(columns):
 
 
 def _get_csv_source_query(urls):
-    """
-    Genera la subconsulta SELECT para leer los CSVs.
-    Centraliza la configuración de read_csv.
-    """
+    """Generates SELECT subquery for reading CSVs with standard configuration."""
     url_list_str = "[" + ", ".join([f"'{u}'" for u in urls]) + "]"
 
     return f"""
@@ -1221,9 +953,7 @@ def _get_csv_source_query(urls):
 
 
 def create_table_from_csv(table_name, url):
-    """
-    Creates a DuckDB table from a single CSV URL if it doesn't exist.
-    """
+    """Creates a DuckDB table from a single CSV URL if it doesn't exist."""
     full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
 
@@ -1239,11 +969,7 @@ def create_table_from_csv(table_name, url):
 
 
 def merge_from_csv(table_name, url):
-    """
-    Merges data from a single CSV URL into an existing DuckDB table.
-    Raises exception if merge fails to ensure task failure in Airflow.
-    Handles transaction errors by forcing a new connection.
-    """
+    """Merges data from a single CSV URL into an existing DuckDB table."""
     full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
 
@@ -1286,15 +1012,7 @@ def merge_from_csv(table_name, url):
 
 
 def create_table_from_json(table_name, url, year: int = None):
-    """
-    Creates a DuckDB table from a single JSON URL if it doesn't exist.
-    Updates statistics for query optimization (DuckDB alternative to indexes).
-    
-    Parameters:
-    - table_name: Name of the table (without layer prefix)
-    - url: URL of the JSON file to create schema from
-    - year: Optional year to add as partition column (for INE tables)
-    """
+    """Creates a DuckDB table from a single JSON URL if it doesn't exist."""
     full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
 
@@ -1302,7 +1020,6 @@ def create_table_from_json(table_name, url, year: int = None):
 
     print(f"Verifying schema for {full_table_name} using first file...")
     
-    # Check if table already exists
     table_exists = False
     try:
         result = con.execute(f"""
@@ -1319,7 +1036,6 @@ def create_table_from_json(table_name, url, year: int = None):
         LIMIT 0;
     """)
     
-    # Add partitioning by year for INE tables (only for new tables)
     if year is not None and not table_exists:
         try:
             con.execute(f"ALTER TABLE {full_table_name} SET PARTITIONED BY (year);")
@@ -1331,17 +1047,7 @@ def create_table_from_json(table_name, url, year: int = None):
 
 
 def merge_from_json(table_name, url, key_columns=None, year: int = None):
-    """
-    Merges data from a single JSON URL into an existing DuckDB table.
-    Raises exception if merge fails to ensure task failure in Airflow.
-    Handles transaction errors by forcing a new connection.
-    
-    Parameters:
-    - table_name: Name of the table (without layer prefix)
-    - url: URL of the JSON file to merge
-    - key_columns: List of columns to use as merge keys
-    - year: Optional year to add to each row (for INE tables)
-    """
+    """Merges data from a single JSON URL into an existing DuckDB table."""
     full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
 
@@ -1349,7 +1055,6 @@ def merge_from_json(table_name, url, key_columns=None, year: int = None):
         merge_keys = _get_data_columns(full_table_name)
     else:
         existing_cols = _get_data_columns(full_table_name)
-        # Exclude 'year' from missing check since it's added dynamically
         missing = [k for k in key_columns if k not in existing_cols and k != 'year']
         if missing:
             raise ValueError(
@@ -1373,7 +1078,6 @@ def merge_from_json(table_name, url, key_columns=None, year: int = None):
         print(f"  Merged successfully.")
     except Exception as e:
         error_str = str(e)
-        # Check if it's a transaction error - DuckDB enters restricted mode
         is_transaction_error = (
             "TransactionContext" in error_str or
             "Failed to commit" in error_str or
@@ -1383,26 +1087,18 @@ def merge_from_json(table_name, url, key_columns=None, year: int = None):
         if is_transaction_error:
             print(
                 f"  Transaction error detected - forcing new connection for next task")
-            # Force new connection to avoid affecting other tasks
             try:
                 get_ducklake_connection(force_new=True)
             except:
-                pass  # Connection will be recreated on next use
+                pass
 
         error_msg = f"  Error processing {url}: {e}"
         print(error_msg)
-        # Re-raise exception to ensure Airflow task fails
         raise RuntimeError(error_msg) from e
 
 
 def _get_json_source_query(url, year: int = None):
-    """
-    Genera la subconsulta SELECT para leer el JSON.
-    
-    Parameters:
-    - url: URL of the JSON file
-    - year: Optional year to add as a column (for INE tables)
-    """
+    """Generates SELECT subquery for reading JSON with optional year column."""
     year_column = f",\n            {year} AS year" if year is not None else ""
     return f"""
         SELECT 
@@ -1414,47 +1110,31 @@ def _get_json_source_query(url, year: int = None):
 
 
 def ine_renta_filter_urls(urls: list[str]):
-    """
-    Filter INE Renta URLs to only include those not already ingested.
-    Uses source_url column (JSON tables use source_url, not source_file).
-    Optimized to use index on source_url for faster lookups.
-    """
+    """Filters INE Renta URLs to exclude already ingested ones."""
     table_name = 'bronze_ine_renta_municipio'
     return _filter_json_urls(table_name, urls)
 
 
 def ine_municipios_filter_urls(urls: list[str]):
-    """
-    Filter INE Municipios URLs to only include those not already ingested.
-    Uses source_url column (JSON tables use source_url, not source_file).
-    """
+    """Filters INE Municipios URLs to exclude already ingested ones."""
     table_name = 'bronze_ine_municipios'
     return _filter_json_urls(table_name, urls)
 
 
 def ine_empresas_filter_urls(urls: list[str]):
-    """
-    Filter INE Empresas URLs to only include those not already ingested.
-    Uses source_url column (JSON tables use source_url, not source_file).
-    """
+    """Filters INE Empresas URLs to exclude already ingested ones."""
     table_name = 'bronze_ine_empresas_municipio'
     return _filter_json_urls(table_name, urls)
 
 
 def ine_poblacion_filter_urls(urls: list[str]):
-    """
-    Filter INE Poblacion URLs to only include those not already ingested.
-    Uses source_url column (JSON tables use source_url, not source_file).
-    """
+    """Filters INE Poblacion URLs to exclude already ingested ones."""
     table_name = 'bronze_ine_poblacion_municipio'
     return _filter_json_urls(table_name, urls)
 
 
 def mitma_create_table(dataset: str, zone_type: str, urls: list[str]):
-    """
-    Create the table for MITMA data if it doesn't exist.
-    Takes the first URL from the list to create the table schema.
-    """
+    """Creates the table for MITMA data if it doesn't exist."""
     table_name = f'mitma_{dataset}_{zone_type}'
 
     if not urls:
@@ -1470,31 +1150,19 @@ def mitma_create_table(dataset: str, zone_type: str, urls: list[str]):
 
 
 def mitma_filter_urls(dataset: str, zone_type: str, urls: list[str]):
-    """
-    Filter MITMA URLs to only include those not already ingested.
-    Uses source_file column (CSV tables use source_file, not source_url).
-    First checks if the table exists. If not, returns all URLs.
-    If table exists, filters out already ingested URLs.
-    """
+    """Filters MITMA URLs to exclude already ingested ones."""
     table_name = f'bronze_mitma_{dataset}_{zone_type}'
     return _filter_csv_urls(table_name, urls)
 
 
 def mitma_ine_relations_filter_urls(urls: list[str]):
-    """
-    Filter MITMA-INE Relations URLs to only include those not already ingested.
-    Uses source_file column (CSV tables use source_file, not source_url).
-    """
+    """Filters MITMA-INE Relations URLs to exclude already ingested ones."""
     table_name = 'bronze_mitma_ine_relations'
     return _filter_csv_urls(table_name, urls)
 
 
 def _filter_json_urls(table_name: str, urls: list[str]):
-    """
-    Generic function to filter JSON table URLs using source_url column.
-    First checks if the table exists. If not, returns all URLs.
-    If table exists, filters out already ingested URLs.
-    """
+    """Generic function to filter JSON table URLs using source_url column."""
     print(f"[TASK] Filtering URLs for {table_name}")
     print(f"[TASK] Total URLs to check: {len(urls)}")
 
@@ -1557,11 +1225,7 @@ def _filter_json_urls(table_name: str, urls: list[str]):
 
 
 def _filter_csv_urls(table_name: str, urls: list[str]):
-    """
-    Generic function to filter CSV table URLs using source_file column.
-    First checks if the table exists. If not, returns all URLs.
-    If table exists, filters out already ingested URLs.
-    """
+    """Generic function to filter CSV table URLs using source_file column."""
     print(f"[TASK] Filtering URLs for {table_name}")
     print(f"[TASK] Total URLs to check: {len(urls)}")
 

@@ -8,34 +8,9 @@ Includes:
 - Batch processing with dynamic task mapping for large datasets
 - Idempotent processing using DISTINCT on silver_mitma_od to track processed dates
 
-Ejemplo de uso con dynamic task mapping en un DAG:
-
-    from dags.silver.mitma.mitma_od import (
-        SILVER_mitma_od_get_date_batches,
-        SILVER_mitma_od_create_table,
-        SILVER_mitma_od_process_batch
-    )
-    
-    # 1. Crear tabla si no existe (idempotente)
-    create_table = SILVER_mitma_od_create_table()
-    
-    # 2. Obtener batches de fechas no procesadas (usa DISTINCT sobre silver_mitma_od)
-    date_batches = SILVER_mitma_od_get_date_batches(
-        batch_size=30  # Procesar 30 fechas por batch
-    )
-    
-    # 3. Procesar cada batch en paralelo usando INSERT INTO
-    batch_results = (
-        SILVER_mitma_od_process_batch
-        .expand(date_batch=date_batches)
-    )
-    
-    # Definir dependencias
-    create_table >> date_batches >> batch_results
 """
 
 from airflow.sdk import task
-from typing import Any
 from typing import List, Dict, Any
 
 from utils.gcp import execute_sql_or_cloud_run
@@ -66,18 +41,15 @@ def SILVER_mitma_od_get_date_batches(
     print(
         f"[TASK] Getting unprocessed dates (batch_size: {batch_size}, start: {start_date}, end: {end_date})")
 
-    # Convertir batch_size a int si llega como string desde params
     batch_size = int(batch_size) if isinstance(batch_size, str) else batch_size
 
     con = get_ducklake_connection()
 
-    # Limpiar fechas (convertir YYYY-MM-DD a YYYYMMDD si es necesario)
     start_clean = start_date.replace(
         '-', '') if start_date and start_date not in ('None', '', '{{ params.start }}') else None
     end_clean = end_date.replace(
         '-', '') if end_date and end_date not in ('None', '', '{{ params.end }}') else None
 
-    # Construir filtro BETWEEN para TIMESTAMP (más eficiente: convertir parámetros a TIMESTAMP)
     date_range = f"AND fecha BETWEEN strptime('{start_clean}', '%Y%m%d') AND strptime('{end_clean}', '%Y%m%d')"
 
     try:
@@ -95,7 +67,6 @@ def SILVER_mitma_od_get_date_batches(
             ORDER BY fecha
         """).fetchdf()
     except Exception as e:
-        # Si silver_mitma_od no existe, procesar todas las fechas del rango en bronze
         print(
             f"[TASK] Silver table may not exist, getting all bronze dates: {e}")
         df = con.execute(f"""
@@ -206,16 +177,13 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
     Returns:
     - Dict con status y metadata del batch procesado
     """
-    # Debug: print what we're receiving
     print(f"[TASK] DEBUG: date_batch type: {type(date_batch)}")
     print(f"[TASK] DEBUG: date_batch content: {date_batch}")
 
-    # Handle both dict and direct list cases
     if isinstance(date_batch, dict):
         fechas = date_batch.get('fechas', [])
         batch_index = date_batch.get('batch_index', 0)
     elif isinstance(date_batch, list):
-        # If it's a list directly, use it as fechas
         fechas = date_batch
         batch_index = 0
     else:
@@ -228,7 +196,6 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
     print(
         f"[TASK] Processing batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
 
-    # INSERT INTO para agregar datos a silver_mitma_od
     sql_query = f"""
         SET preserve_insertion_order=false;
         SET enable_object_cache=true;

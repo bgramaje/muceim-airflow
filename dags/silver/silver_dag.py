@@ -222,24 +222,20 @@ with DAG(
     }
 ) as dag:
 
-    # Silver layer tasks
     mitma_zonif = SILVER_mitma_zonification.override(task_id="zonification")()
     
-    # MITMA People Day con TaskGroup (create table + insert)
     people_day_group, people_day_done = create_people_day_group(
         dag, 
         start_date="{{ params.start }}", 
         end_date="{{ params.end }}"
     )
     
-    # MITMA Overnight Stay con TaskGroup (create table + insert)
     overnight_group, overnight_done = create_overnight_stay_group(
         dag, 
         start_date="{{ params.start }}", 
         end_date="{{ params.end }}"
     )
     
-    # MITMA OD con procesamiento por batches - TaskGroup
     od_group, od_done = create_mitma_od_batches_group(
         dag, 
         start_date="{{ params.start }}",
@@ -251,41 +247,19 @@ with DAG(
 
     mapping = SILVER_mitma_ine_mapping.override(task_id="mitma_ine_mapping")()
 
-    # INE processing TaskGroup (incluye coverage_check dentro del TaskGroup)
     ine_group = ine_all()
 
-    # OD Quality con procesamiento por batches - TaskGroup
     od_quality_group, od_quality_create_table = create_od_quality_batches_group(dag)
 
     start = EmptyOperator(task_id="start")
     done = EmptyOperator(task_id="done")
 
     start >> mapping
-    
-    # ============ SUBGRUPO MITMA ============
-    # Zonification depende del mapping (mitma_ine_mapping)
     mapping >> mitma_zonif
-    
-    # Otras tareas MITMA se ejecutan en paralelo después de start
-    # Start is automatically triggered when all bronze assets are ready
     start >> [overnight_group, people_day_group, od_group]
-    
-    # Distances depende solo de zonification
     mitma_zonif >> mitma_distances
-    
-    # ============ SUBGRUPO INE ============
-    # Coverage check depende del mapping (conexión externa al TaskGroup)
     mapping >> ine_group.coverage_check
-    
-    # El branching de coverage_check decide:
-    # - Si coverage es completa: salta todo y va directo a done
-    # - Si coverage es incompleta: ejecuta INE tasks
-    # (Las dependencias internas coverage_check -> business/population/income están dentro del TaskGroup)
     ine_group.coverage_check >> done
-    
-    # INE all depende de mitma_zonification + todos los outputs INE
-    # (Las dependencias internas del TaskGroup ya manejan business/population/income -> ine_all)
-    # Necesitamos añadir la dependencia externa de mitma_zonif
     mitma_zonif >> ine_group.ine_all
     
     # od_quality_create_table (primera tarea del TaskGroup) depende de:

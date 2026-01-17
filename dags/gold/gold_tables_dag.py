@@ -45,7 +45,6 @@ with DAG(
     start = EmptyOperator(task_id="start")
     done = EmptyOperator(task_id="done")
 
-    # Question 1: Typical Day (incremental processing)
     with TaskGroup(group_id="typical_day_batches") as typ_day_group:
         typ_day_create_table = GOLD_typical_day_create_table.override(
             task_id="create_table"
@@ -64,11 +63,8 @@ with DAG(
         
         typ_day_create_table >> typ_day_date_batches >> typ_day_process_batches
     
-    # Question 2: Gravity Model (still uses CREATE OR REPLACE - calculates best k)
     grav_model = GOLD_gravity_model.override(task_id="gravity_model")()
 
-    # Question 3: Functional Type (runs locally - requires sklearn, no date column)
     func_type = GOLD_functional_type.override(task_id="functional_type")()
 
-    # Dependencies
     start >> [typ_day_group, grav_model, func_type] >> done

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 
 def load_extension(con: duckdb.DuckDBPyConnection, extension: str):
-    """Carga una extensión de DuckDB."""
+    """Loads a DuckDB extension with fallback if already installed."""
     try:
         con.execute(f"INSTALL {extension};")
         con.execute(f"LOAD {extension};")
@@ -134,7 +134,6 @@ class DuckLakeConnectionManager:
             RUSTFS_BUCKET = os.environ.get("RUSTFS_BUCKET", "mitma")
             RUSTFS_SSL = os.environ.get("RUSTFS_SSL", "false")
 
-        # --- 2. Configuración Inicial DuckDB ---
         default_config = _get_default_duckdb_config()
         if duckdb_config:
             duckdb_config = {**default_config, **duckdb_config}
@@ -161,8 +160,6 @@ class DuckLakeConnectionManager:
             );
         """)
 
-        # Crear SECRET HTTP con headers personalizados
-        # Usamos formato de string normal para evitar problemas con f-strings y llaves
         con.execute("""
             CREATE OR REPLACE SECRET mitma_conf (
                 TYPE HTTP,
@@ -184,36 +181,52 @@ class DuckLakeConnectionManager:
         con.execute(
             f"SET enable_object_cache={str(duckdb_config['enable_object_cache']).lower()};")
 
-        # Primero httpfs, ya que DuckLake y S3 dependen de ella
         load_extension(con, 'httpfs')
         load_extension(con, 'postgres')
 
         try:
-            con.execute("FORCE INSTALL ducklake FROM core_nightly;")
-            con.execute("LOAD ducklake;")
+            load_extension(con, 'ducklake')  # Use stable, not core_nightly
         except Exception as e:
-            print(f"⚠️ DuckLake nightly failed ({e}), trying standard...")
-            load_extension(con, 'ducklake')
+            print(f"DuckLake nightly failed: {e}, trying standard...") 
+            try:
+                con.execute("FORCE INSTALL ducklake FROM stable;")
+                con.execute("LOAD ducklake;")
+                print("DuckLake standard loaded")
+            except Exception as e:
+                print(f"DuckLake standard failed: {e}")
+                raise
 
-        # --- 6. Conexión a DuckLake ---
         databases = con.execute(
             "SELECT database_name FROM duckdb_databases();").fetchdf()
-        if 'ducklake' not in databases['database_name'].values:
+        database_names = databases['database_name'].values if not databases.empty else []
+        
+        # Build PostgreSQL connection string (single line, no extra whitespace)
+        postgres_connection_string = (
+            f"dbname={POSTGRES_DB} host={POSTGRES_HOST} user={POSTGRES_USER} "
+            f"password={POSTGRES_PASSWORD} port={POSTGRES_PORT} "
+            f"sslmode=prefer connect_timeout=60 keepalives=1 keepalives_idle=60 "
+            f"keepalives_interval=30 keepalives_count=10 tcp_user_timeout=300000"
+        )
+        
+        # Attach DuckLake for main operations
+        if 'ducklake' not in database_names:
             print("🔌 Attaching DuckLake...")
-            postgres_connection_string = f"""
-                dbname={POSTGRES_DB} host={POSTGRES_HOST} user={POSTGRES_USER} password={POSTGRES_PASSWORD} port={POSTGRES_PORT} 
-                sslmode=prefer connect_timeout=60 keepalives=1 keepalives_idle=60 
-                keepalives_interval=30 keepalives_count=10 tcp_user_timeout=300000
-            """
-
-            # Nota: Al usar SECRETS arriba, el ATTACH ya tiene acceso autenticado al bucket
             attach_query = f"""
                 ATTACH 'ducklake:postgres:{postgres_connection_string}' 
                 AS ducklake (DATA_PATH 's3://{RUSTFS_BUCKET}/');
             """
             con.execute(attach_query)
+            print("✅ DuckLake attached")
 
         con.execute("USE ducklake;")
+        
+        # Verify DuckLake connection works (this also validates PostgreSQL connectivity)
+        try:
+            con.execute("SELECT 1")
+            print("✅ DuckLake connection verified")
+        except Exception as e:
+            print(f"⚠️ DuckLake connection verification failed: {e}")
+            raise
 
         return con
 
@@ -256,12 +269,7 @@ def get_ducklake_connection(force_new=False, duckdb_config=None):
 
 @contextmanager
 def ducklake_connection():
-    """
-    Context manager for DuckLake connection.
-
-    Use this when you want automatic cleanup, but be aware it will
-    close the connection when exiting the context.
-    """
+    """Context manager for DuckLake connection (currently unused)."""
     con = get_ducklake_connection()
     try:
         yield con

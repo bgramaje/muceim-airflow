@@ -10,22 +10,18 @@ from datetime import datetime, timedelta
 from airflow.models import Param
 from airflow.sdk import Variable
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-from airflow.sdk import task
+from airflow.sdk import task, TaskGroup
 from airflow import DAG
 from airflow.providers.standard.operators.empty import EmptyOperator
-from airflow.sdk import TaskGroup
 import hashlib
 
 from gold.tasks import (
-    # Question 1 reports
     GOLD_generate_typical_day_map,
     GOLD_generate_top_origins,
     GOLD_generate_hourly_distribution,
-    # Question 2 reports
     GOLD_generate_mismatch_distribution,
     GOLD_generate_table,
     GOLD_generate_mismatch_map,
-    # Question 3 reports
     GOLD_generate_in_out_distribution,
     GOLD_generate_functional_type_map
 )
@@ -97,7 +93,6 @@ with DAG(
         polygon_wkt="{{ params.polygon }}"
     )
 
-    # Question 1: Typical day reports (sequential execution)
     with TaskGroup("question_1", tooltip="Typical Day Tasks") as q1_group:
         typ_day_map = GOLD_generate_typical_day_map.override(task_id="typical_day_map")(
             save_id=save_id,
@@ -118,10 +113,8 @@ with DAG(
             polygon_wkt="{{ params.polygon }}"
         )
         
-        # Sequential execution: map -> top_origins -> hourly_distribution
         typ_day_map >> typ_day_top >> typ_day_hourly
 
-    # Question 2: Gravity model reports
     with TaskGroup("question_2", tooltip="Gravity Model Tasks") as q2_group:
         grav_dist = GOLD_generate_mismatch_distribution.override(task_id="gravity_model_mismatch_distribution")(
             save_id=save_id,
@@ -142,7 +135,6 @@ with DAG(
             polygon_wkt="{{ params.polygon }}"
         )
 
-    # Question 3: Functional type reports
     with TaskGroup("question_3", tooltip="Functional Type Tasks") as q3_group:
         func_type_dist = GOLD_generate_in_out_distribution.override(task_id="functional_type_hourly")(
             save_id=save_id,

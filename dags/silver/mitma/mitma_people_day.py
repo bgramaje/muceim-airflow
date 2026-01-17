@@ -8,7 +8,6 @@ import sys
 import os
 from airflow.sdk import task  # type: ignore
 
-# Add parent directory to path to import utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
@@ -28,7 +27,6 @@ def SILVER_mitma_people_day_create_table(**context):
     
     con = get_ducklake_connection()
     
-    # Crear tabla primero
     con.execute("""
         CREATE TABLE IF NOT EXISTS silver_people_day (
             fecha DATE,
@@ -40,9 +38,6 @@ def SILVER_mitma_people_day_create_table(**context):
         );
     """)
     
-    # Configurar particionado por fecha (columna DATE - usar identity)
-    # Para columnas DATE, DuckLake recomienda usar identity (nombre de columna directamente)
-    # Las funciones year/month/day pueden causar problemas con columnas DATE
     con.execute("""
         ALTER TABLE silver_people_day SET PARTITIONED BY (fecha);
     """)
@@ -73,10 +68,8 @@ def SILVER_mitma_people_day_insert(start_date: str = None, end_date: str = None,
 
     con = get_ducklake_connection()
     
-    # Construir filtro de fechas si se especifican
     date_filter = ""
     if start_date and start_date not in ('None', '', '{{ params.start }}'):
-        # Convertir formato YYYY-MM-DD a YYYYMMDD si es necesario
         start_clean = start_date.replace('-', '')
         date_filter += f" AND CAST(fecha AS VARCHAR) >= '{start_clean}'"
         print(f"[TASK] Filtering from start_date: {start_clean}")
@@ -85,7 +78,6 @@ def SILVER_mitma_people_day_insert(start_date: str = None, end_date: str = None,
         date_filter += f" AND CAST(fecha AS VARCHAR) <= '{end_clean}'"
         print(f"[TASK] Filtering to end_date: {end_clean}")
     
-    # Insertar datos
     query = f"""
         INSERT INTO silver_people_day
         WITH base AS (

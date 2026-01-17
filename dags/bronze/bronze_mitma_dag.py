@@ -18,14 +18,10 @@ from utils.utils import get_default_pool_slots
 
 from bronze.tasks.mitma import (
     BRONZE_mitma_od_urls,
-    BRONZE_mitma_od_create_table,
     BRONZE_mitma_od_filter_urls,
-    BRONZE_mitma_od_process,
-    BRONZE_mitma_od_create_url_batches,
     BRONZE_mitma_od_create_partitioned_table,
     BRONZE_mitma_od_download_batch,
     BRONZE_mitma_od_process_batch,
-    BRONZE_mitma_od_download_and_process_batch,
     BRONZE_mitma_od_cleanup_batch,
     BRONZE_mitma_people_day_urls,
     BRONZE_mitma_people_day_create_table,
@@ -76,7 +72,6 @@ def create_tg_od(zone_type: str):
             task_id="check_urls"
         )(od_filtered_urls)
 
-        # Create partitioned table with fecha as TIMESTAMP
         od_create_table = BRONZE_mitma_od_create_partitioned_table.override(
             task_id="od_create_table",
         )(
@@ -84,7 +79,6 @@ def create_tg_od(zone_type: str):
             zone_type=zone_type,
         )
         
-        # Create URL batches using batch_size parameter from DAG params
         @task
         def create_batches(filtered_urls: list[str], **context):
             """Create batches from filtered URLs using batch_size parameter."""
@@ -99,9 +93,6 @@ def create_tg_od(zone_type: str):
         od_batches = create_batches.override(
             task_id="od_create_batches"
         )(od_filtered_urls)
-        
-        # FASE 1: Descargar URLs y subir a RustFS (local - bajo consumo de recursos)
-        # Dynamic task mapping para descargar cada batch en paralelo (local)
         od_download = (
             BRONZE_mitma_od_download_batch.override(
                 task_id="od_download_to_rustfs",
@@ -111,8 +102,6 @@ def create_tg_od(zone_type: str):
             .expand(batch=od_batches)
         )
         
-        # FASE 2: Procesar archivos desde RustFS con Cloud Run (alto consumo de recursos)
-        # Dynamic task mapping para procesar cada batch descargado
         od_process = (
             BRONZE_mitma_od_process_batch.override(
                 task_id="od_process_cloudrun",
@@ -122,8 +111,6 @@ def create_tg_od(zone_type: str):
             .expand(download_result=od_download)
         )
         
-        # FASE 3: Limpieza de archivos temporales de RustFS después del procesamiento
-        # Usa el resultado de od_process (que incluye download_result original)
         od_cleanup = (
             BRONZE_mitma_od_cleanup_batch.override(
                 task_id="od_cleanup_rustfs",
@@ -170,8 +157,7 @@ def create_tg_people_day(zone_type: str):
             urls=people_urls,
             zone_type=zone_type,
         )
-
-        # Check if enabled and if there are URLs to process
+        
         @task.branch
         def check_people_day_urls(filtered_urls: list[str], **context):
             """Check if people_day is enabled and has URLs to process."""
@@ -266,7 +252,6 @@ def create_tg_overnight(zone_type: str):
             zone_type=zone_type,
         )
         
-        # Overnight insert: limitado a 1 instancia concurrente
         overnight_insert = (
             BRONZE_mitma_overnight_stay_insert.override(
                 task_id="overnight_insert",
@@ -348,7 +333,6 @@ def create_tg_ine_relations():
         """TaskGroup for MITMA-INE Relations data ingestion.
         Simplified: reads directly from URL (lightweight operation).
         """
-        # Single task that reads directly from URL and creates table
         relations_load = BRONZE_mitma_ine_relations.override(
             task_id="relations_load",
         )()

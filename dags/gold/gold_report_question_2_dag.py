@@ -37,7 +37,6 @@ def generate_directory(start_date: str = None, end_date: str = None, polygon_wkt
     Returns:
     - str: UUID for the report directory
     """
-    # Generate UUID for this report
     report_uuid = str(uuid.uuid4())
 
     content = f"Start date: {start_date}\nEnd date: {end_date}\n\n{polygon_wkt}"
@@ -84,7 +83,6 @@ with DAG(
     start = EmptyOperator(task_id="start")
     done = EmptyOperator(task_id="done")
 
-    # Infrastructure setup TaskGroup
     with TaskGroup(group_id="infra") as infra_group:
         validate_dates_task = validate_dates.override(task_id="validate_dates")(
             start_date="{{ params.start }}",
@@ -99,10 +97,8 @@ with DAG(
 
         verify_s3 = GOLD_verify_s3_connection.override(task_id="verify_s3_connection")()
 
-        # Sequential execution within infra group
         validate_dates_task >> save_id >> verify_s3
 
-    # Question 2: Gravity model reports (parallel execution)
     grav_dist = GOLD_generate_mismatch_distribution.override(task_id="gravity_model_mismatch_distribution")(
         save_id=save_id,
         start_date="{{ params.start }}",
@@ -122,6 +118,5 @@ with DAG(
         polygon_wkt="{{ params.polygon }}"
     )
 
-    # Execution flow: start -> infra -> reports (parallel) -> done
     start >> infra_group >> [grav_dist, grav_table, grav_map] >> done
 

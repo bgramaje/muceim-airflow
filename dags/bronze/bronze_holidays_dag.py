@@ -10,10 +10,8 @@ from airflow.datasets import Dataset
 from airflow.models import Param
 from airflow.providers.standard.operators.empty import EmptyOperator
 
-# Import infrastructure setup TaskGroup
 from misc.infra import tg_infra
 
-# Import Bronze Holidays tasks
 from bronze.tasks.holidays.spanish_holidays import BRONZE_load_spanish_holidays
 
 

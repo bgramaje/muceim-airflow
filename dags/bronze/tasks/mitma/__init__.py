@@ -1,15 +1,10 @@
 from .mitma_od import (
     BRONZE_mitma_od_urls,
-    BRONZE_mitma_od_create_table,
     BRONZE_mitma_od_filter_urls,
-    BRONZE_mitma_od_process,
-    # V2: New optimized tasks
     BRONZE_mitma_od_get_and_filter_urls,
-    BRONZE_mitma_od_create_url_batches,
     BRONZE_mitma_od_create_partitioned_table,
     BRONZE_mitma_od_download_batch,
     BRONZE_mitma_od_process_batch,
-    BRONZE_mitma_od_download_and_process_batch,
     BRONZE_mitma_od_cleanup_batch,
     BRONZE_mitma_od_finalize,
 )
@@ -32,18 +27,12 @@ from .mitma_zonification import (
 from .mitma_ine_relations import BRONZE_mitma_ine_relations
 
 __all__ = [
-    # Original OD tasks
     "BRONZE_mitma_od_urls",
-    "BRONZE_mitma_od_create_table",
     "BRONZE_mitma_od_filter_urls",
-    "BRONZE_mitma_od_process",
-    # V2: Optimized OD tasks
     "BRONZE_mitma_od_get_and_filter_urls",
-    "BRONZE_mitma_od_create_url_batches",
     "BRONZE_mitma_od_create_partitioned_table",
     "BRONZE_mitma_od_download_batch",
     "BRONZE_mitma_od_process_batch",
-    "BRONZE_mitma_od_download_and_process_batch",
     "BRONZE_mitma_od_cleanup_batch",
     "BRONZE_mitma_od_finalize",
     # People Day tasks
