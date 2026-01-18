@@ -13,16 +13,16 @@ from utils.gcp import execute_sql_or_cloud_run
 def _post_process_in_out_distribution(df, con, result_dict):
     """
     Post-processing function to generate Plotly chart and upload to S3.
-    This function runs in Cloud Run and uses boto3 for S3 upload.
+    This function runs in Cloud Run and uses Airflow connection for S3 upload.
     """
     import os
-    import boto3
-    from botocore.config import Config
     import pandas as pd
     import plotly.graph_objects as go
+    from utils.s3 import upload_to_s3_rustfs
     
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
     save_id = os.environ.get('REPORT_SAVE_ID')
+    bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
         print("[WARNING] No data to visualize")
@@ -125,33 +125,15 @@ def _post_process_in_out_distribution(df, con, result_dict):
 
     html_content = fig.to_html(full_html=True)
     
-    # Get S3 credentials from environment variables
-    s3_endpoint = os.environ.get("S3_ENDPOINT", "rustfs:9000")
-    rustfs_user = os.environ.get("RUSTFS_USER")
-    rustfs_password = os.environ.get("RUSTFS_PASSWORD")
-    rustfs_ssl = os.environ.get("RUSTFS_SSL", "false").lower() == "true"
-    bucket_name = os.environ.get("RUSTFS_BUCKET", "mitma")
-    
-    # Configure boto3 S3 client
-    endpoint_url = f"{'https' if rustfs_ssl else 'http'}://{s3_endpoint}"
-    s3_client = boto3.client(
-        's3',
-        endpoint_url=endpoint_url,
-        aws_access_key_id=rustfs_user,
-        aws_secret_access_key=rustfs_password,
-        config=Config(signature_version='s3v4')
-    )
-    
-    # Upload to S3
+    # Upload to S3 using Airflow connection
     s3_key = f"gold/question3/{save_id}/in_out_distribution.html"
-    s3_client.put_object(
-        Bucket=bucket_name,
-        Key=s3_key,
-        Body=html_content.encode('utf-8'),
-        ContentType='text/html'
+    s3_path = upload_to_s3_rustfs(
+        content=html_content,
+        s3_key=s3_key,
+        content_type='text/html',
+        bucket_name=bucket_name
     )
     
-    s3_path = f"s3://{bucket_name}/{s3_key}"
     print(f"[SUCCESS] Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
@@ -162,6 +144,7 @@ def GOLD_generate_in_out_distribution(
     start_date: str = None,
     end_date: str = None,
     polygon_wkt: str = None,
+    bucket_name: str = None,
     **context
 ):
     """
@@ -250,6 +233,7 @@ def GOLD_generate_in_out_distribution(
     if 'extra_env_vars' not in context:
         context['extra_env_vars'] = {}
     context['extra_env_vars']['REPORT_SAVE_ID'] = save_id
+    context['extra_env_vars']['RUSTFS_BUCKET'] = bucket_name
     
     # Pass the function directly (not a closure) - parameters will be read from env vars inside the function
     result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=_post_process_in_out_distribution, **context)
@@ -259,18 +243,18 @@ def GOLD_generate_in_out_distribution(
 def _post_process_functional_type_map(df, con, result_dict):
     """
     Post-processing function to generate Kepler.gl choropleth map and upload to S3.
-    This function runs in Cloud Run and uses boto3 for S3 upload.
+    This function runs in Cloud Run and uses Airflow connection for S3 upload.
     """
     import os
     import json
-    import boto3
-    from botocore.config import Config
     from shapely import wkt
     from keplergl import KeplerGl
+    from utils.s3 import upload_to_s3_rustfs
     
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
     save_id = os.environ.get('REPORT_SAVE_ID')
     polygon_wkt = os.environ.get('REPORT_POLYGON_WKT')
+    bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
         print("[WARNING] No data to visualize")
@@ -334,33 +318,15 @@ def _post_process_functional_type_map(df, con, result_dict):
     if isinstance(html_content, bytes):
         html_content = html_content.decode("utf-8")
     
-    # Get S3 credentials from environment variables
-    s3_endpoint = os.environ.get("S3_ENDPOINT", "rustfs:9000")
-    rustfs_user = os.environ.get("RUSTFS_USER")
-    rustfs_password = os.environ.get("RUSTFS_PASSWORD")
-    rustfs_ssl = os.environ.get("RUSTFS_SSL", "false").lower() == "true"
-    bucket_name = os.environ.get("RUSTFS_BUCKET", "mitma")
-    
-    # Configure boto3 S3 client
-    endpoint_url = f"{'https' if rustfs_ssl else 'http'}://{s3_endpoint}"
-    s3_client = boto3.client(
-        's3',
-        endpoint_url=endpoint_url,
-        aws_access_key_id=rustfs_user,
-        aws_secret_access_key=rustfs_password,
-        config=Config(signature_version='s3v4')
-    )
-    
-    # Upload to S3
+    # Upload to S3 using Airflow connection
     s3_key = f"gold/question3/{save_id}/functional_type_map.html"
-    s3_client.put_object(
-        Bucket=bucket_name,
-        Key=s3_key,
-        Body=html_content.encode('utf-8'),
-        ContentType='text/html'
+    s3_path = upload_to_s3_rustfs(
+        content=html_content,
+        s3_key=s3_key,
+        content_type='text/html',
+        bucket_name=bucket_name
     )
     
-    s3_path = f"s3://{bucket_name}/{s3_key}"
     print(f"[SUCCESS] Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
@@ -371,6 +337,7 @@ def GOLD_generate_functional_type_map(
     start_date: str = None,
     end_date: str = None,
     polygon_wkt: str = None,
+    bucket_name: str = None,
     **context
 ):
     """
@@ -415,6 +382,7 @@ def GOLD_generate_functional_type_map(
         context['extra_env_vars'] = {}
     context['extra_env_vars']['REPORT_SAVE_ID'] = save_id
     context['extra_env_vars']['REPORT_POLYGON_WKT'] = polygon_wkt
+    context['extra_env_vars']['RUSTFS_BUCKET'] = bucket_name
     
     # Pass the function directly (not a closure) - parameters will be read from env vars inside the function
     result = execute_sql_or_cloud_run(sql_query=sql_query, post_process_func=_post_process_functional_type_map, **context)

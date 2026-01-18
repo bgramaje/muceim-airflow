@@ -233,6 +233,7 @@ def _load_cloud_env() -> Dict[str, str]:
 def _serialize_post_process_func(post_process_func) -> Dict[str, str] | None:
     """
     Serializes a post-processing function for Cloud Run execution.
+    Includes helper functions from utils.s3 if imported.
     
     Args:
         post_process_func: The function to serialize
@@ -244,6 +245,7 @@ def _serialize_post_process_func(post_process_func) -> Dict[str, str] | None:
     import base64
     import zlib
     import textwrap
+    import os
     
     try:
         func_code = inspect.getsource(post_process_func)
@@ -256,10 +258,27 @@ def _serialize_post_process_func(post_process_func) -> Dict[str, str] | None:
             if name.endswith('_SQL') and isinstance(value, str):
                 constants.append(f"{name} = {repr(value)}")
         
+        # Check if upload_to_s3_rustfs is imported from utils.s3
+        # If so, include its code in the serialization
+        helper_code = ""
+        if 'upload_to_s3_rustfs' in func_code and 'from utils.s3 import' in func_code:
+            try:
+                from utils.s3 import upload_to_s3_rustfs
+                helper_code = inspect.getsource(upload_to_s3_rustfs)
+                helper_code = textwrap.dedent(helper_code)
+                # Replace the import with the actual function definition
+                func_code = func_code.replace(
+                    'from utils.s3 import upload_to_s3_rustfs',
+                    '# upload_to_s3_rustfs function included below'
+                )
+                helper_code = helper_code + '\n\n'
+            except Exception as e:
+                print(f"[WARNING] Could not include upload_to_s3_rustfs helper: {str(e)}")
+        
         if constants:
-            full_code = '\n'.join(constants) + '\n\n' + func_code
+            full_code = '\n'.join(constants) + '\n\n' + helper_code + func_code
         else:
-            full_code = func_code
+            full_code = helper_code + func_code
         
         print(f"[INFO] Serialized post_process_func (imports are inside the function)")
         

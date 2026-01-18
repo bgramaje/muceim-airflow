@@ -38,19 +38,27 @@ def SILVER_mitma_od_get_date_batches(
     Returns:
     - Lista de diccionarios con 'fechas' y 'batch_index' para cada batch
     """
-    print(
-        f"[TASK] Getting unprocessed dates (batch_size: {batch_size}, start: {start_date}, end: {end_date})")
-
     batch_size = int(batch_size) if isinstance(batch_size, str) else batch_size
 
     con = get_ducklake_connection()
 
-    start_clean = start_date.replace(
-        '-', '') if start_date and start_date not in ('None', '', '{{ params.start }}') else None
-    end_clean = end_date.replace(
-        '-', '') if end_date and end_date not in ('None', '', '{{ params.end }}') else None
+    # Limpiar y validar fechas
+    start_clean = None
+    if start_date and start_date not in ('None', '', '{{ params.start }}'):
+        start_clean = start_date.replace('-', '')
+    
+    end_clean = None
+    if end_date and end_date not in ('None', '', '{{ params.end }}'):
+        end_clean = end_date.replace('-', '')
 
-    date_range = f"AND fecha BETWEEN strptime('{start_clean}', '%Y%m%d') AND strptime('{end_clean}', '%Y%m%d')"
+    # Construir filtro de fecha solo si ambas fechas están definidas
+    if start_clean and end_clean:
+        date_range = f"AND fecha BETWEEN strptime('{start_clean}', '%Y%m%d') AND strptime('{end_clean}', '%Y%m%d')"
+    else:
+        date_range = ""
+
+    print(
+        f"Getting unprocessed dates (batch_size: {batch_size}, start: {start_date}, end: {end_date})")
 
     try:
         df = con.execute(f"""
@@ -68,7 +76,7 @@ def SILVER_mitma_od_get_date_batches(
         """).fetchdf()
     except Exception as e:
         print(
-            f"[TASK] Silver table may not exist, getting all bronze dates: {e}")
+            f"table may not exist, getting all bronze dates: {e}")
         df = con.execute(f"""
             SELECT DISTINCT strftime(fecha, '%Y%m%d') AS fecha
             FROM bronze_mitma_od_municipios
@@ -77,11 +85,11 @@ def SILVER_mitma_od_get_date_batches(
         """).fetchdf()
 
     if df.empty:
-        print("[TASK] No unprocessed dates found")
+        print("No unprocessed dates found")
         return []
 
     fechas = sorted(df['fecha'].tolist())
-    print(f"[TASK] {len(fechas)} unprocessed dates to process")
+    print(f"{len(fechas)} unprocessed dates to process")
 
     # Crear batches
     batches = [
@@ -89,7 +97,7 @@ def SILVER_mitma_od_get_date_batches(
         for i, j in enumerate(range(0, len(fechas), batch_size))
     ]
 
-    print(f"[TASK] Created {len(batches)} batches")
+    print(f"Created {len(batches)} batches")
     return batches
 
 

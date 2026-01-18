@@ -2,16 +2,19 @@ from airflow.sdk import task
 
 from utils.utils import get_ducklake_connection
 
+
 @task
-def SILVER_ine_poblacion_municipio():
+def SILVER_ine_poblacion_municipio(**context):
     """
     Airflow task to create silver_ine_poblacion_municipio table.
+    Adds year column extracted from params.start (YYYY-MM-DD format).
     """
-    print("[TASK] Building silver_ine_poblacion_municipio table")
-
     con = get_ducklake_connection()
 
-    # User provided SQL from notebook
+    year = context['params'].get('start', '')[
+        :4] if context['params'].get('start') else ''
+    print(f"Using year: {year}")
+
     query = f"""
         CREATE OR REPLACE TABLE silver_ine_poblacion_municipio AS (
         WITH poblacion_parsed AS (
@@ -45,21 +48,20 @@ def SILVER_ine_poblacion_municipio():
             zone_id,
             COALESCE(SUM(CASE WHEN tipo = 'total' THEN valor ELSE 0 END), 0) AS poblacion_total,
             COALESCE(SUM(CASE WHEN tipo = 'hombres' THEN valor ELSE 0 END), 0) AS poblacion_hombres,
-            COALESCE(SUM(CASE WHEN tipo = 'mujeres' THEN valor ELSE 0 END), 0) AS poblacion_mujeres
+            COALESCE(SUM(CASE WHEN tipo = 'mujeres' THEN valor ELSE 0 END), 0) AS poblacion_mujeres,
+            '{year}' AS year
         FROM poblacion_mitma
         GROUP BY zone_id
     )
     """
-    
-    con.execute(query)
 
-    count = con.execute("SELECT COUNT(*) as count FROM silver_ine_poblacion_municipio").fetchdf()
-    record_count = int(count['count'].iloc[0])
-    
-    print(f"[TASK] Created silver_ine_poblacion_municipio with {record_count:,} records")
-
-    return {
-        "status": "success",
-        "records": record_count,
-        "table": "silver_ine_poblacion_municipio"
-    }
+    try:
+        con.execute(query)
+        return {
+            "status": "success",
+            "table": "silver_ine_poblacion_municipio"
+        }
+    except Exception as e:
+        raise e
+    finally:
+        con.close()

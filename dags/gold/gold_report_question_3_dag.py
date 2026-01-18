@@ -12,37 +12,39 @@ from airflow.sdk import Variable
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.sdk import task, TaskGroup
 from airflow import DAG
-from airflow.datasets import Dataset
 from airflow.providers.standard.operators.empty import EmptyOperator
-import uuid
 
 from gold.tasks import (
     GOLD_generate_in_out_distribution,
     GOLD_generate_functional_type_map,
     GOLD_verify_s3_connection,
 )
+from gold.utils import build_dir_name, get_params
 from utils.dag import validate_dates
 
 
 @task
-def generate_directory(start_date: str = None, end_date: str = None, polygon_wkt: str = None):
+def generate_directory(**context):
     """
     Generate a unique directory identifier for the report and save info file.
     
-    Parameters:
-    - start_date: Start date for the report
-    - end_date: End date for the report
-    - polygon_wkt: WKT polygon defining the area of interest
+    Parameters are extracted from context['params'].
     
     Returns:
-    - str: UUID for the report directory
+    - str: Directory name in format DDMMYYYY_6digitsUUID
     """
-    report_uuid = str(uuid.uuid4())
+    params = context.get('params', {})
+    start_date = params.get('start')
+    end_date = params.get('end')
+    polygon_wkt = params.get('polygon')
+    
+    execution_date = context.get('execution_date') or context.get('ds')
+    directory_name = build_dir_name(execution_date=execution_date)
 
     content = f"Start date: {start_date}\nEnd date: {end_date}\n\n{polygon_wkt}"
     bucket_name = Variable.get('RUSTFS_BUCKET', default='mitma')
     s3 = S3Hook(aws_conn_id="rustfs_s3_conn")
-    s3_key = f"gold/question3/{report_uuid}/info.txt"
+    s3_key = f"gold/question3/{directory_name}/info.txt"
     s3.load_string(
         string_data=content,
         key=s3_key,
@@ -50,35 +52,17 @@ def generate_directory(start_date: str = None, end_date: str = None, polygon_wkt
         replace=True
     )
     print(f"[SUCCESS] Uploaded to s3://{bucket_name}/{s3_key}")
-    return report_uuid
+    return directory_name
 
 
 with DAG(
     dag_id="gold_report_question_3",
     start_date=datetime(2025, 12, 1),
-    schedule=[Dataset("gold://tables/done")],  # Wait for Gold Tables to complete
+    schedule=None,  # Manual execution only
     catchup=False,
     tags=["gold", "report", "question_3", "functional_type"],
-    description="Gold layer Question 3 report generation - Functional Type classification. Automatically triggered when Gold Tables completes. Can also be manually triggered with parameters",
-    params={
-        "start": Param(
-            type=["string", "null"],
-            default=None,
-            description="Start date (YYYY-MM-DD)",
-            schema={"type": ["string", "null"], "format": "date"}
-        ),
-        "end": Param(
-            type=["string", "null"],
-            default=None,
-            description="End date (YYYY-MM-DD)",
-            schema={"type": ["string", "null"], "format": "date"}
-        ),
-        "polygon": Param(
-            type=["string", "null"],
-            default=None,
-            description="Polygon WKT"
-        ),
-    },
+    description="Gold layer Question 3 report generation - Functional Type classification. Manual execution only with parameters",
+    params=get_params(),
     default_args={
         "retries": 3,
         "retry_delay": timedelta(seconds=30),
@@ -92,31 +76,31 @@ with DAG(
 
     with TaskGroup(group_id="infra") as infra_group:
         validate_dates_task = validate_dates.override(task_id="validate_dates")(
-            start_date="{{ params.start }}",
-            end_date="{{ params.end }}"
+            start_date="{{ params.start_date }}",
+            end_date="{{ params.end_date }}"
         )
 
-        save_id = generate_directory.override(task_id="create_directory")(
-            start_date="{{ params.start }}",
-            end_date="{{ params.end }}",
-            polygon_wkt="{{ params.polygon }}"
-        )
+        save_id = generate_directory.override(task_id="create_directory")()
 
         verify_s3 = GOLD_verify_s3_connection.override(task_id="verify_s3_connection")()
 
         validate_dates_task >> save_id >> verify_s3
 
+    bucket_name = Variable.get('RUSTFS_BUCKET', default='mitma')
+    
     func_type_dist = GOLD_generate_in_out_distribution.override(task_id="functional_type_hourly")(
         save_id=save_id,
-        start_date="{{ params.start }}",
-        end_date="{{ params.end }}",
-        polygon_wkt="{{ params.polygon }}"
+        start_date="{{ params.start_date }}",
+        end_date="{{ params.end_date }}",
+        polygon_wkt="{{ params.polygon_wkt }}",
+        bucket_name=bucket_name
     )
     func_type_map = GOLD_generate_functional_type_map.override(task_id="functional_type_map")(
         save_id=save_id,
-        start_date="{{ params.start }}",
-        end_date="{{ params.end }}",
-        polygon_wkt="{{ params.polygon }}"
+        start_date="{{ params.start_date }}",
+        end_date="{{ params.end_date }}",
+        polygon_wkt="{{ params.polygon_wkt }}",
+        bucket_name=bucket_name
     )
 
     start >> infra_group >> [func_type_dist, func_type_map] >> done

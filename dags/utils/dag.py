@@ -19,10 +19,8 @@ def validate_dates(start_date: str = None, end_date: str = None, **context):
     - AirflowException: If dates are invalid or end_date <= start_date
     """
     from airflow.exceptions import AirflowException
-    
-    if not start_date or not end_date:
-        raise AirflowException("Both 'start' and 'end' parameters are required")
-    
+    print(f"Received start_date: {start_date}, end_date: {end_date}")
+
     try:
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
         end_dt = datetime.strptime(end_date, '%Y-%m-%d')

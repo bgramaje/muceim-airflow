@@ -4,15 +4,17 @@ from utils.utils import get_ducklake_connection
 
 
 @task
-def SILVER_ine_empresas():
+def SILVER_ine_empresas(**context):
     """
     Airflow task to create silver_ine_empresas_municipio table.
+    Adds year column extracted from params.start (YYYY-MM-DD format).
     """
-    print("[TASK] Building silver_ine_empresas_municipio table")
-
     con = get_ducklake_connection()
 
-    # User provided SQL from notebook
+    year = context['params'].get('start', '')[
+        :4] if context['params'].get('start') else ''
+    print(f"Using year: {year}")
+
     query = f"""
         CREATE OR REPLACE TABLE silver_ine_empresas_municipio AS (
         WITH empresas_parsed AS (
@@ -42,21 +44,20 @@ def SILVER_ine_empresas():
         )
         SELECT 
             zone_id,
-            COALESCE(SUM(valor), 0) AS empresas
+            COALESCE(SUM(valor), 0) AS empresas,
+            '{year}' AS year
         FROM empresas_mitma
         GROUP BY zone_id
     )
     """
-    
-    con.execute(query)
 
-    count = con.execute("SELECT COUNT(*) as count FROM silver_ine_empresas_municipio").fetchdf()
-    record_count = int(count['count'].iloc[0])
-    
-    print(f"[TASK] Created silver_ine_empresas_municipio with {record_count:,} records")
-
-    return {
-        "status": "success",
-        "records": record_count,
-        "table": "silver_ine_empresas_municipio"
-    }
+    try:
+        con.execute(query)
+        return {
+            "status": "success",
+            "table": "silver_ine_empresas_municipio"
+        }
+    except Exception as e:
+        raise e
+    finally:
+        con.close()

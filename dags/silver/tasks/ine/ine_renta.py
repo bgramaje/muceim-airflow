@@ -4,15 +4,17 @@ from utils.utils import get_ducklake_connection
 
 
 @task
-def SILVER_ine_renta():
+def SILVER_ine_renta(**context):
     """
     Airflow task to create silver_ine_renta_municipio table.
+    Adds year column extracted from params.start (YYYY-MM-DD format).
     """
-    print("[TASK] Building silver_ine_renta_municipio table")
-
     con = get_ducklake_connection()
 
-    # User provided SQL from notebook
+    year = context['params'].get('start', '')[
+        :4] if context['params'].get('start') else ''
+    print(f"Using year: {year}")
+
     query = f"""
         CREATE OR REPLACE TABLE silver_ine_renta_municipio AS (
         WITH renta_parsed AS (
@@ -46,23 +48,20 @@ def SILVER_ine_renta():
         SELECT 
             zone_id,
             tipo,
-            COALESCE(ROUND(AVG(valor), 2), 0) AS renta_media
+            COALESCE(ROUND(AVG(valor), 2), 0) AS renta_media,
+            '{year}' AS year
         FROM renta_mitma
         GROUP BY zone_id, tipo    
     )
     """
-    
-    con.execute(query)
 
-    # Verification
-    count = con.execute("SELECT COUNT(*) as count FROM silver_ine_renta_municipio").fetchdf()
-    record_count = int(count['count'].iloc[0])
-    
-    print(f"[TASK] Created silver_ine_renta_municipio with {record_count:,} records")
-
-    return {
-        "status": "success",
-        "records": record_count,
-        "table": "silver_ine_renta_municipio"
-    }
-
+    try:
+        con.execute(query)
+        return {
+            "status": "success",
+            "table": "silver_ine_renta_municipio"
+        }
+    except Exception as e:
+        raise e
+    finally:
+        con.close()

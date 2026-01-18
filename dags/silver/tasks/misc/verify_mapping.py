@@ -6,46 +6,52 @@ from utils.utils import get_ducklake_connection
 @task.branch
 def SILVER_verify_mapping_coverage(**context):
     """
-    Verify if all zones in silver_zones are covered in silver_mitma_ine_mapping.
-    The mapping table doesn't have a year column, so we check overall coverage.
+    Verify if all zones in silver_ine_all are covered in silver_mitma_ine_mapping.
+    Performs a difference operation to find zones that are missing in the mapping.
     
     Returns task_ids to execute:
-    - ['ine_all.business', 'ine_all.population', 'ine_all.income'] if coverage is incomplete (execute INE tasks)
-    - 'done' if coverage is complete (skip all INE processing)
+    - ['ine_processing.business', 'ine_processing.population', 'ine_processing.income'] if there are differences (execute INE tasks)
+    - 'ine_processing.done' if no differences found (skip all INE processing)
     
-    If silver_zones doesn't exist, returns INE task IDs (execute all INE tasks).
+    If silver_ine_all doesn't exist, returns INE task IDs (execute all INE tasks).
     """
-    print("[TASK] Verifying mapping coverage")
 
     con = get_ducklake_connection()
+    
+    # Safely extract year from params.start, handling None case
+    start_param = context['params'].get('start')
+    year = start_param[:4] if start_param else None
+    
+    if not year:
+        print("[TASK] No start date provided in params. Processing all INE tasks.")
+        return ['ine_processing.business', 'ine_processing.population', 'ine_processing.income']
 
     try:
-        zones_count = con.execute(f"""
-            SELECT COUNT(*) AS count 
-            FROM silver_ine_all 
-            WHERE year = '{context['params']['start'][:4]}'
-        """).fetchdf().iloc[0]['count']
-
-        mapping_count = con.execute(f"""
-            SELECT COUNT(DISTINCT(municipio_mitma)) AS count 
-            FROM silver_mitma_ine_mapping
-            WHERE year = '{context['params']['start'][:4]}'
-        """).fetchdf().iloc[0]['count']
+        # Find zones in silver_ine_all that are NOT 
+        # in silver_mitma_ine_mapping for the given year
+        difference_df = con.execute(f"""
+            SELECT DISTINCT a.id
+            FROM silver_ine_all a
+            WHERE a.year = '{year}'
+            AND a.id NOT IN (
+                SELECT DISTINCT municipio_mitma 
+                FROM silver_mitma_ine_mapping
+            )
+        """).fetchdf()
         
-        print(f"[TASK] silver_zones count: {zones_count}")
-        print(f"[TASK] silver_mitma_ine_mapping distinct municipios: {mapping_count}")
+        difference_count = len(difference_df)
         
-        coverage_complete = zones_count == mapping_count
+        print(f"[TASK] Zones in silver_ine_all (year={year}) not found in silver_mitma_ine_mapping: {difference_count}")
         
-        if coverage_complete:
-            print("[TASK] Coverage is complete. Skipping all INE tasks and finishing")
-            return 'done'
+        if difference_count > 0:
+            print(f"[TASK] Missing zones found. Processing INE tasks: {difference_df['id'].tolist()}")
+            return ['ine_processing.business', 'ine_processing.population', 'ine_processing.income']
         else:
-            print("[TASK] Coverage incomplete. Executing INE processing tasks")
-            return ['ine_all.business', 'ine_all.population', 'ine_all.income']
+            print(f"[TASK] All zones are covered in mapping. Skipping INE processing.")
+            return 'ine_processing.done'
 
     except Exception as e:
-        print(f"[TASK] silver_zones table does not exist or error: {e}")
-        print("[TASK] Returning INE task IDs to execute all INE tasks")
-        return ['ine_all.business', 'ine_all.population', 'ine_all.income']
-    
+        print(f"silver_ine_all table does not exist or error: {e}")
+        return ['ine_processing.business', 'ine_processing.population', 'ine_processing.income']
+    finally:
+        con.close()

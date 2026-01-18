@@ -37,16 +37,10 @@ def ine_all():
     ine_all = SILVER_ine_all.override(task_id="ine_all")()
     cleanup_ine = CLEANUP_intermediate_ine_tables.override(task_id="cleanup_intermediate_ine_tables")()
     
-    # El branching de coverage_check decide:
-    # - Si coverage es completa: salta todo y va directo a done
-    # - Si coverage es incompleta: ejecuta INE tasks
     coverage_check >> ine_emp
     coverage_check >> ine_pob
     coverage_check >> ine_renta
-    
-    # Business, population, and income can run in parallel
-    # ine_all depends on all three completing (external dependency on mitma_zonif handled outside)
-    # cleanup runs after ine_all
+
     [ine_emp, ine_pob, ine_renta] >> ine_all >> cleanup_ine
     
     return SimpleNamespace(
