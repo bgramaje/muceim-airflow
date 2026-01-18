@@ -9,7 +9,6 @@ import numpy as np
 from airflow.sdk import task  # type: ignore
 
 from utils.gcp import execute_sql_or_cloud_run
-from utils.logger import get_logger
 
 
 def _post_process_gravity_model_complete(df, con, result_dict):
@@ -30,8 +29,7 @@ def _post_process_gravity_model_complete(df, con, result_dict):
     # Imports necesarios (se incluyen en el código serializado)
     import numpy as np
     
-    logger = get_logger(__name__)
-    logger.info("Calculating best k value and creating gravity model table")
+    print("[TASK] Calculating best k value and creating gravity model table")
     
     # Get the most recent year from silver_mitma_od
     year_result = con.execute("""
@@ -44,7 +42,7 @@ def _post_process_gravity_model_complete(df, con, result_dict):
         raise ValueError("No data available in silver_mitma_od to calculate k_value")
     
     target_year = int(year_result.iloc[0]['max_year'])
-    logger.info(f"Using year {target_year} for k_value calculation")
+    print(f"[TASK] Using year {target_year} for k_value calculation")
     
     # Generate SQL query for the target year (inline, since function may not be available in Cloud Run)
     best_k_sql = f"""
@@ -93,7 +91,7 @@ def _post_process_gravity_model_complete(df, con, result_dict):
     df = con.execute(best_k_sql).fetchdf()
     
     # 1. Calculate optimal k using numpy
-    logger.info("Calculating best k value using RMSE minimization")
+    print("[TASK] Calculating best k value using RMSE minimization")
     k_values = np.linspace(10e-5, 1, 5000)
     rmse_list = []
 
@@ -103,10 +101,10 @@ def _post_process_gravity_model_complete(df, con, result_dict):
         rmse_list.append(rmse)
 
     best_k = float(k_values[np.argmin(rmse_list)])
-    logger.info(f"Best k value found: {best_k}")
+    print(f"[TASK] Best k value found: {best_k}")
     
     # 2. Create gold_gravity_mismatch table with the calculated k_value
-    logger.info(f"Creating gold_gravity_mismatch table with k={best_k}")
+    print(f"[TASK] Creating gold_gravity_mismatch table with k={best_k}")
     
     # Inline SQL generation (no need for _get_gravity_model_sql function)
     gravity_sql = f"""
@@ -156,7 +154,7 @@ def _post_process_gravity_model_complete(df, con, result_dict):
     # 3. Get record count
     count = con.execute("SELECT COUNT(*) AS count FROM gold_gravity_mismatch").fetchdf()
     record_count = int(count.iloc[0]['count'])
-    logger.info(f"Created gold_gravity_mismatch with {record_count:,} records")
+    print(f"[TASK] Created gold_gravity_mismatch with {record_count:,} records")
     
     return {
         "best_k_value": best_k,
@@ -180,8 +178,7 @@ def GOLD_gravity_model(**context):
     Returns:
     - Dict with task status and info
     """
-    logger = get_logger(__name__, context)
-    logger.info("Building gold_gravity_mismatch table with best k value (Business Question 2)")
+    print("[TASK] Building gold_gravity_mismatch table with best k value (Business Question 2)")
 
     # Execute with post-processing function
     # The post_process_func will determine the year dynamically and calculate k_value
@@ -194,7 +191,7 @@ def GOLD_gravity_model(**context):
         **context
     )
 
-    logger.info(f"Execution: {result.get('execution_name', 'unknown')}")
+    print(f"[TASK] Execution: {result.get('execution_name', 'unknown')}")
 
     return {
         "status": "success",

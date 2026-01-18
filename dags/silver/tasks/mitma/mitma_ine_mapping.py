@@ -1,15 +1,13 @@
 
 from utils.utils import get_ducklake_connection
 from airflow.sdk import task  # type: ignore
-from utils.logger import get_logger
 
 
 @task
-def SILVER_mitma_ine_mapping(**context):
+def SILVER_mitma_ine_mapping():
     """
     Airflow task to create silver_mitma_ine_mapping table.
     """
-    logger = get_logger(__name__, context)
     con = get_ducklake_connection()
 
     query = """
@@ -42,7 +40,7 @@ def SILVER_mitma_ine_mapping(**context):
         FROM silver_mitma_ine_mapping 
         LIMIT 10
     """).fetchdf()
-    logger.debug(f"Sample data: {show_df}")
+    print(show_df)
 
     return {
         "status": "success",

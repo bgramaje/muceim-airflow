@@ -5,7 +5,6 @@ a session-scoped TEMP table called bronze_spanish_holidays.
 """
 
 from airflow.sdk import task  # type: ignore
-from utils.logger import get_logger
 
 
 @task
@@ -34,9 +33,7 @@ def BRONZE_load_spanish_holidays(year: int = 2023):
     """
     )
 
-    logger = get_logger(__name__)
-    sample_df = con.execute("SELECT * FROM bronze_spanish_holidays LIMIT 10").fetchdf()
-    logger.debug(f"Sample data: {sample_df}")
+    print(con.execute("SELECT * FROM bronze_spanish_holidays LIMIT 10").fetchdf())
 
     return {
         "status": "success",

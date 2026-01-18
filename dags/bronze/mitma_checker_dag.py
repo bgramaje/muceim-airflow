@@ -9,7 +9,6 @@ from airflow import DAG
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.sdk import task
-from utils.logger import get_logger
 
 
 @task
@@ -33,9 +32,8 @@ def check_od_urls(zone_type: str = "municipios", **context):
     
     has_urls = len(urls) > 0
     
-    logger = get_logger(__name__, context)
-    logger.info(f"OD URLs check for {zone_type} on {ds}:")
-    logger.info(f"  URLs found: {len(urls)}")
+    print(f"OD URLs check for {zone_type} on {ds}:")
+    print(f"  URLs found: {len(urls)}")
    
     return {
         'has_urls': has_urls,

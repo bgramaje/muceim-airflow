@@ -1,7 +1,6 @@
 """MITMA-specific utility functions for Bronze layer data ingestion."""
 
 from utils.utils import get_ducklake_connection
-from utils.logger import get_logger
 import re
 import urllib.request
 import urllib.parse
@@ -18,7 +17,7 @@ from typing import List, Dict, Any
 
 def download_url_to_file(url: str, file_path: str, timeout: int = 2000) -> int:
     """Downloads a file using streaming to disk with automatic retry."""
-    logger = get_logger(__name__)
+ 
     chunk_size = 8 * 1024 * 1024
 
     req = urllib.request.Request(
@@ -41,11 +40,11 @@ def download_url_to_file(url: str, file_path: str, timeout: int = 2000) -> int:
 
                 if expected_size and total_size - last_progress_log >= 10 * 1024 * 1024:
                     progress = (total_size / expected_size) * 100
-                    logger.info(
+                    print(
                         f"Progress: {progress:.1f}% ({total_size:,} / {expected_size:,} bytes)")
                     last_progress_log = total_size
 
-    logger.info(f"Complete: {total_size:,} bytes")
+    print(f"Complete: {total_size:,} bytes")
     return total_size
 
 
@@ -69,16 +68,15 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str, bucket: str) 
     if not filename:
         raise ValueError(f"could not extract filename from URL: {url}")
 
-    logger = get_logger(__name__)
     s3_key = f"{dataset}/{zone_type}/{filename}"
     s3_path = f"s3://{bucket}/{s3_key}"
 
-    logger.info(f"target S3 path: {s3_path}")
+    print(f"target S3 path: {s3_path}")
 
     s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
 
     if s3_hook.check_for_key(s3_key, bucket_name=bucket):
-        logger.info(f"file already exists: {s3_path}")
+        print(f"file already exists: {s3_path}")
         return s3_path
 
     temp_file = None
@@ -86,24 +84,24 @@ def download_url_to_rustfs(url: str, dataset: str, zone_type: str, bucket: str) 
         with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp:
             temp_file = tmp.name
 
-        logger.info(f"starting streaming download to disk: {url}")
+        print(f"starting streaming download to disk: {url}")
         total_bytes = download_url_to_file(url, temp_file)
 
-        logger.info(f"uploading {total_bytes:,} bytes to {s3_path}")
+        print(f"uploading {total_bytes:,} bytes to {s3_path}")
         s3_hook.load_file(
             filename=temp_file,
             key=s3_key,
             bucket_name=bucket,
             replace=True
         )
-        logger.info(f"successfully uploaded to {s3_path}")
+        print(f"successfully uploaded to {s3_path}")
     finally:
         if temp_file and os.path.exists(temp_file):
             try:
                 os.unlink(temp_file)
             except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Could not delete temp file {temp_file}: {e}")
+                print(
+                    f"Warning: Could not delete temp file {temp_file}: {e}")
 
     return s3_path
 
@@ -125,23 +123,26 @@ def download_batch_to_rustfs(
     Returns:
         Dictionary mapping URLs to their S3 paths
     """
-    logger = get_logger(__name__)
     results = {}
     failed = []
 
-    logger.info(f"Starting download of {len(urls)} URLs")
+    print(
+        f"Starting download of {len(urls)} URLs")
 
     for i, url in enumerate(urls, 1):
         try:
             s3_path = download_url_to_rustfs(url, dataset, zone_type, bucket)
             results[url] = s3_path
-            logger.info(f"[{i}/{len(urls)}] Success: {os.path.basename(url)}")
+            print(
+                f"[{i}/{len(urls)}] Success: {os.path.basename(url)}")
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"[{i}/{len(urls)}] Failed: {os.path.basename(url)} - {error_msg}")
+            print(
+                f"[{i}/{len(urls)}] Failed: {os.path.basename(url)} - {error_msg}")
             failed.append((url, error_msg))
 
-    logger.info(f"Completed: {len(results)} success, {len(failed)} failed")
+    print(
+        f"Completed: {len(results)} success, {len(failed)} failed")
 
     return results
 
@@ -170,8 +171,7 @@ def delete_batch_from_rustfs(s3_paths: List[str], bucket: str) -> Dict[str, bool
             return None
         return parts[1]
 
-    logger = get_logger(__name__)
-    logger.info(f"deleting {len(s3_paths)} files from RustFS")
+    print(f"deleting {len(s3_paths)} files from RustFS")
 
     s3_client = s3_hook.get_conn()
 
@@ -188,11 +188,12 @@ def delete_batch_from_rustfs(s3_paths: List[str], bucket: str) -> Dict[str, bool
 
             results[s3_path] = True
         except Exception as e:
-            logger.error(f"error deleting {s3_path}: {e}", exc_info=True)
+            print(f"error deleting {s3_path}: {e}")
             results[s3_path] = False
 
     success_count = sum(1 for v in results.values() if v)
-    logger.info(f"completed: {success_count}/{len(s3_paths)} deleted successfully")
+    print(
+        f"completed: {success_count}/{len(s3_paths)} deleted successfully")
 
     return results
 
@@ -204,10 +205,9 @@ def create_table_from_csv(
     fecha_as_timestamp: bool = False
 ):
     """Creates a DuckDB table with optional partitioning by year/month/day."""
-    logger = get_logger(__name__)
     con = get_ducklake_connection()
 
-    logger.info(f"Creating table {table_name}")
+    print(f"Creating table {table_name}")
 
     source_sql = _get_csv_source_query([url], fecha_as_timestamp=fecha_as_timestamp)
 
@@ -233,9 +233,9 @@ def create_table_from_csv(
             ALTER TABLE {table_name} 
             {partition_clause}
         """)
-        logger.info("Applied partitioning")
+        print(f"Applied partitioning")
     except Exception as e:
-        logger.warning(f"Could not apply partitioning (table may already be partitioned): {e}")
+        print(f"Warning: Could not apply partitioning (table may already be partitioned): {e}")
 
     return {
         'status': 'created',
@@ -271,8 +271,7 @@ def copy_batch_to_table(
     if original_urls is None:
         original_urls = s3_paths
 
-    logger = get_logger(__name__)
-    logger.info(f"copying {len(s3_paths)} files from RustFS into {table_name}")
+    print(f"copying {len(s3_paths)} files from RustFS into {table_name}")
 
     union_parts = []
     for i, s3_path in enumerate(s3_paths):
@@ -313,11 +312,11 @@ def copy_batch_to_table(
     try:
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         success_count = len(s3_paths)
-        logger.info(f"Successfully processed {len(s3_paths)} files")
-        logger.debug(f"Result: {result}")
+        print(f"Successfully processed {len(s3_paths)} files")
+        print(result)
     except Exception as e:
         error_msg = f"Error copying batch: {str(e)}"
-        logger.error(f"Batch insert failed: {error_msg}", exc_info=True)
+        print(f"Batch insert failed: {error_msg}")
         return {
             'success': 0,
             'failed': len(s3_paths),
@@ -353,8 +352,7 @@ def copy_from_csv_batch(
     original_urls = [item.get('original_url', item['s3_path'])
                      for item in downloaded]
 
-    logger = get_logger(__name__)
-    logger.info(f"Processing batch {batch_index}: {len(s3_paths)} files")
+    print(f"Processing batch {batch_index}: {len(s3_paths)} files")
 
     result = copy_batch_to_table(
         table_name=table_name,
@@ -409,9 +407,8 @@ def get_mitma_urls(dataset, zone_type, fechas: list[str]):
 
     unique_matches = list(set(matches))
 
-    logger = get_logger(__name__)
     if not fechas:
-        logger.warning(f"Found 0 URLs for {dataset} {zone_type}: empty fechas list")
+        print(f"Found 0 URLs for {dataset} {zone_type}: empty fechas list")
         return []
 
     fechas_set = {str(f).replace("-", "") for f in fechas if f}
@@ -425,10 +422,11 @@ def get_mitma_urls(dataset, zone_type, fechas: list[str]):
 
     urls = [url for url, _ in filtered_urls]
 
-    logger.info(f"Found {len(urls)} URLs for {dataset} {zone_type} for {len(fechas_set)} requested dates")
+    print(
+        f"Found {len(urls)} URLs for {dataset} {zone_type} for {len(fechas_set)} requested dates")
 
     if not urls:
-        logger.warning("No URLs found. Check if data exists for the requested dates.")
+        print(f"WARNING: No URLs found. Check if data exists for the requested dates.")
 
     return urls
 
@@ -445,10 +443,9 @@ def get_mitma_zoning_urls(zone_type):
     file_suffix = "gaus" if zone_type == "gau" else zone_type
 
     shp_pattern = rf'(https?://[^\s"<>]*/zonificacion/zonificacion_{folder_suffix}/[^"<>]+\.(?:shp|shx|dbf|prj))'
-    logger = get_logger(__name__)
     csv_pattern = rf'(https?://[^\s"<>]*/zonificacion/zonificacion_{folder_suffix}/(?:nombres|poblacion)_{file_suffix}\.csv)'
 
-    logger.info(f"📡 Scanning RSS for {zone_type} zoning files...")
+    print(f"📡 Scanning RSS for {zone_type} zoning files...")
 
     try:
         req = urllib.request.Request(
@@ -468,10 +465,12 @@ def get_mitma_zoning_urls(zone_type):
             (u for u in unique_csv if 'poblacion' in u.lower()), None)
 
         if not unique_shp and not unique_csv:
-            logger.warning("No zoning URLs found in RSS. The feed might have rotated them out.")
+            print(
+                "WARNING: No zoning URLs found in RSS. The feed might have rotated them out.")
             return {}
 
-        logger.info(f"Found {len(unique_shp)} shapefile components and {len(unique_csv)} CSVs.")
+        print(
+            f"Found {len(unique_shp)} shapefile components and {len(unique_csv)} CSVs.")
 
         return {
             "shp_components": unique_shp,
@@ -480,7 +479,7 @@ def get_mitma_zoning_urls(zone_type):
         }
 
     except Exception as e:
-        logger.error(f"ERROR fetching RSS: {e}", exc_info=True)
+        print(f"ERROR fetching RSS: {e}")
         return {}
 
 
@@ -500,13 +499,12 @@ def clean_poblacion(series):
 
 def get_mitma_zoning_dataset(zone_type='municipios'):
     """Downloads, cleans and merges MITMA zoning data into a GeoDataFrame."""
-    logger = get_logger(__name__)
     urls = get_mitma_zoning_urls(zone_type)
 
-    logger.info(f"Generando dataset maestro para: {zone_type.upper()}")
+    print(f"Generando dataset maestro para: {zone_type.upper()}")
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        logger.info("   Descargando geometrías...")
+        print("   Descargando geometrías...")
         shp_local_path = None
 
         for url in urls['shp_components']:
@@ -520,10 +518,10 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
                     if filename.endswith('.shp'):
                         shp_local_path = local_p
             except Exception as e:
-                logger.error(f"      Error bajando {filename}: {e}", exc_info=True)
+                print(f"      Error bajando {filename}: {e}")
 
         if not shp_local_path:
-            logger.error("Error: No se pudo descargar el archivo .shp principal.")
+            print("Error: No se pudo descargar el archivo .shp principal.")
             return None
 
         gdf = gpd.read_file(shp_local_path)
@@ -536,7 +534,7 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
         if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
             gdf = gdf.to_crs("EPSG:4326")
 
-        logger.info("   🔗 Integrating metadata (Names and Population)...")
+        print("   🔗 Integrating metadata (Names and Population)...")
         df_aux = pd.DataFrame(columns=['ID'])
 
         aux_config = [
@@ -584,9 +582,9 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
                     else:
                         df_aux = df_aux.merge(df_t, on='ID', how='outer')
 
-                    logger.info(f"      {cfg['type'].capitalize()} OK")
+                    print(f"      {cfg['type'].capitalize()} OK")
             except Exception as e:
-                logger.error(f"      Failed processing {cfg['type']}: {e}", exc_info=True)
+                print(f"      Failed processing {cfg['type']}: {e}")
 
         if not df_aux.empty:
             gdf = gdf.merge(df_aux, on='ID', how='left')
@@ -601,7 +599,7 @@ def get_mitma_zoning_dataset(zone_type='municipios'):
             [c for c in gdf.columns if c not in cols]
         gdf = gdf[final_cols]
 
-        logger.info(f"Dataset generado: {len(gdf)} registros.")
+        print(f"Dataset generado: {len(gdf)} registros.")
         return gdf
 
 
@@ -609,9 +607,8 @@ def load_zonificacion(con, zone_type, lake_layer='bronze'):
     """Loads zonification data into DuckDB for the specified zone type."""
     df = get_mitma_zoning_dataset(zone_type)
 
-    logger = get_logger(__name__)
     if df is None or df.empty:
-        logger.warning(f"No data to load for {zone_type}")
+        print(f"No data to load for {zone_type}")
         return
 
     for col in df.columns:
@@ -649,8 +646,7 @@ def load_zonificacion(con, zone_type, lake_layer='bronze'):
 
     con.unregister('temp_zonificacion')
 
-    logger = get_logger(__name__)
-    logger.info(f"Table {table_name} merged successfully with {len(df)} records.")
+    print(f"Table {table_name} merged successfully with {len(df)} records.")
 
 def _get_csv_source_query(urls, fecha_as_timestamp=False):
     """Generates SELECT subquery for reading CSVs with standard configuration.
@@ -694,8 +690,7 @@ def filter_json_urls(table_name: str, urls: list[str]):
     Returns:
         List of URLs that haven't been ingested yet
     """
-    logger = get_logger(__name__)
-    logger.info(f"Filtering {len(urls)} URLs for {table_name}")
+    print(f"Filtering {len(urls)} URLs for {table_name}")
 
     con = get_ducklake_connection()
 
@@ -714,13 +709,15 @@ def filter_json_urls(table_name: str, urls: list[str]):
 
         ingested_urls = set(
             ingested_df['source_url'].tolist()) if not ingested_df.empty else set()
-        logger.info(f"Found {len(ingested_urls)} already ingested URLs (out of {len(urls)} checked)")
+        print(
+            f"Found {len(ingested_urls)} already ingested URLs (out of {len(urls)} checked)")
     except Exception as e:
-        logger.warning(f"Could not check existing URLs (table may not exist): {e}")
-        logger.info("Returning all URLs")
+        print(f"Warning: Could not check existing URLs (table may not exist): {e}")
+        print(f"Returning all URLs")
         return urls
 
     new_urls = [url for url in urls if url not in ingested_urls]
-    logger.info(f"Filtered result: {len(new_urls)} new URLs to ingest (skipping {len(urls) - len(new_urls)} already ingested)")
+    print(
+        f"Filtered result: {len(new_urls)} new URLs to ingest (skipping {len(urls) - len(new_urls)} already ingested)")
 
     return new_urls

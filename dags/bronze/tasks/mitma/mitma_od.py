@@ -12,7 +12,6 @@ V2 Features:
 
 from airflow.sdk import task
 from typing import List, Dict, Any
-from utils.logger import get_logger
 
 
 @task
@@ -71,8 +70,7 @@ def BRONZE_mitma_od_urls(
         """).fetchdf()
 
     except Exception as e:
-        logger = get_logger(__name__, context)
-        logger.warning(f"Could not compute inserted dates. Fallback to full range. Error: {e}")
+        print(f"Could not compute inserted dates. Fallback to full range. Error: {e}")
         df_requested = con.execute(f"""
             SELECT DISTINCT strftime(timestamp, '%Y%m%d') AS fecha
             FROM ({series_sql})
@@ -80,9 +78,8 @@ def BRONZE_mitma_od_urls(
         """).fetchdf()
 
 
-    logger = get_logger(__name__, context)
     missing_dates = df_requested['fecha'].tolist() if not df_requested.empty else []
-    logger.info(f"Missing dates to process: {len(missing_dates)}")
+    print(f"Missing dates to process: {len(missing_dates)}")
 
     if not missing_dates:
         return []
@@ -103,11 +100,10 @@ def BRONZE_mitma_od_create_table(
     if not urls:
         return {'status': 'skipped', 'reason': 'no_urls'}
     
-    logger = get_logger(__name__)
     dataset = 'od'
     table_name = f'bronze_mitma_{dataset}_{zone_type}'
     
-    logger.info(f"Creating partitioned table bronze_{table_name} with fecha as TIMESTAMP")
+    print(f"Creating partitioned table bronze_{table_name} with fecha as TIMESTAMP")
     return create_table_from_csv(
         table_name=table_name,
         url=urls[0],
@@ -142,8 +138,7 @@ def BRONZE_mitma_od_download_batch(
             'failed': []
         }
     
-    logger = get_logger(__name__, context)
-    logger.info(f"Downloading batch {batch_index}: {len(urls)} URLs sequentially (one by one)")
+    print(f"Downloading batch {batch_index}: {len(urls)} URLs sequentially (one by one)")
     
     results = download_batch_to_rustfs(urls, dataset, zone_type, bucket)
     
@@ -179,11 +174,10 @@ def BRONZE_mitma_od_process_batch(
     bucket = Variable.get('RAW_BUCKET', default='mitma-raw')
     
     dataset = 'od'
-    logger = get_logger(__name__, context)
     table_name = f'bronze_mitma_{dataset}_{zone_type}'
     batch_index = download_result.get('batch_index', 0)
     
-    logger.info(f"Processing batch {batch_index} using executor")
+    print(f"Processing batch {batch_index} using executor")
     
     result = copy_from_csv_batch(
         table_name=table_name,
@@ -195,10 +189,10 @@ def BRONZE_mitma_od_process_batch(
     downloaded = download_result.get('downloaded', [])
     if downloaded:
         s3_paths = [item['s3_path'] for item in downloaded]
-        logger.info(f"Cleaning up batch {batch_index}: {len(s3_paths)} files from RustFS")
+        print(f"Cleaning up batch {batch_index}: {len(s3_paths)} files from RustFS")
         delete_results = delete_batch_from_rustfs(s3_paths, bucket)
         deleted = sum(1 for v in delete_results.values() if v)
-        logger.info(f"Deleted {deleted}/{len(s3_paths)} files from RustFS")
+        print(f"Deleted {deleted}/{len(s3_paths)} files from RustFS")
     else:
         deleted = 0
     

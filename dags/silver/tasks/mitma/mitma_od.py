@@ -15,7 +15,6 @@ from typing import List, Dict, Any
 
 from utils.gcp import execute_sql_or_cloud_run
 from utils.utils import get_ducklake_connection
-from utils.logger import get_logger
 
 
 @task
@@ -58,8 +57,8 @@ def SILVER_mitma_od_get_date_batches(
     else:
         date_range = ""
 
-    logger = get_logger(__name__, context)
-    logger.info(f"Getting unprocessed dates (batch_size: {batch_size}, start: {start_date}, end: {end_date})")
+    print(
+        f"Getting unprocessed dates (batch_size: {batch_size}, start: {start_date}, end: {end_date})")
 
     try:
         df = con.execute(f"""
@@ -76,7 +75,8 @@ def SILVER_mitma_od_get_date_batches(
             ORDER BY fecha
         """).fetchdf()
     except Exception as e:
-        logger.warning(f"table may not exist, getting all bronze dates: {e}")
+        print(
+            f"table may not exist, getting all bronze dates: {e}")
         df = con.execute(f"""
             SELECT DISTINCT strftime(fecha, '%Y%m%d') AS fecha
             FROM bronze_mitma_od_municipios
@@ -85,11 +85,11 @@ def SILVER_mitma_od_get_date_batches(
         """).fetchdf()
 
     if df.empty:
-        logger.info("No unprocessed dates found")
+        print("No unprocessed dates found")
         return []
 
     fechas = sorted(df['fecha'].tolist())
-    logger.info(f"{len(fechas)} unprocessed dates to process")
+    print(f"{len(fechas)} unprocessed dates to process")
 
     # Crear batches
     batches = [
@@ -97,7 +97,7 @@ def SILVER_mitma_od_get_date_batches(
         for i, j in enumerate(range(0, len(fechas), batch_size))
     ]
 
-    logger.info(f"Created {len(batches)} batches")
+    print(f"Created {len(batches)} batches")
     return batches
 
 
@@ -125,8 +125,7 @@ def SILVER_mitma_od_create_table(**context) -> Dict:
     Returns:
     - Dict con status de la creación de la tabla
     """
-    logger = get_logger(__name__, context)
-    logger.info("Creating silver_mitma_od table if it doesn't exist")
+    print("[TASK] Creating silver_mitma_od table if it doesn't exist")
 
     con = get_ducklake_connection()
 
@@ -140,6 +139,7 @@ def SILVER_mitma_od_create_table(**context) -> Dict:
     except:
         pass
 
+    # Crear tabla si no existe (sin tabla de tracking, usamos DISTINCT sobre silver_mitma_od)
     con.execute("""
         SET preserve_insertion_order=false;
         SET enable_object_cache=true;
@@ -160,7 +160,7 @@ def SILVER_mitma_od_create_table(**context) -> Dict:
         con.execute(
             "ALTER TABLE silver_mitma_od SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));")
 
-    logger.info("Tables created/verified successfully")
+    print("[TASK] Tables created/verified successfully")
 
     return {
         "status": "success",
@@ -185,9 +185,8 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
     Returns:
     - Dict con status y metadata del batch procesado
     """
-    logger = get_logger(__name__, context)
-    logger.debug(f"date_batch type: {type(date_batch)}")
-    logger.debug(f"date_batch content: {date_batch}")
+    print(f"[TASK] DEBUG: date_batch type: {type(date_batch)}")
+    print(f"[TASK] DEBUG: date_batch content: {date_batch}")
 
     if isinstance(date_batch, dict):
         fechas = date_batch.get('fechas', [])
@@ -202,7 +201,8 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
     if not fechas:
         raise ValueError(f"No fechas found in date_batch: {date_batch}")
 
-    logger.info(f"Processing batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
+    print(
+        f"[TASK] Processing batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
 
     sql_query = f"""
         SET preserve_insertion_order=false;
@@ -229,7 +229,8 @@ def SILVER_mitma_od_process_batch(date_batch: Dict[str, Any], **context) -> Dict
 
     result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
 
-    logger.info(f"Batch {batch_index} processed successfully: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
+    print(
+        f"[TASK] Batch {batch_index} processed successfully: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
 
     return {
         "status": "success",

@@ -8,7 +8,6 @@ for gravity model analysis. These run in Cloud Run for better performance.
 from airflow.sdk import task  # type: ignore
 
 from utils.gcp import execute_sql_or_cloud_run
-from utils.logger import get_logger
 
 
 def _post_process_mismatch_distribution(df, con, result_dict):
@@ -26,12 +25,11 @@ def _post_process_mismatch_distribution(df, con, result_dict):
     from utils.s3 import upload_to_s3_rustfs
     
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
-    logger = get_logger(__name__)
     save_id = os.environ.get('REPORT_SAVE_ID')
     bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
-        logger.warning("No data to visualize")
+        print("[WARNING] No data to visualize")
         return {'status': 'skipped', 'message': 'No data available'}
     
     mm_ratios = np.asarray(df["mm_ratio"].to_list())
@@ -66,7 +64,7 @@ def _post_process_mismatch_distribution(df, con, result_dict):
         bucket_name=bucket_name
     )
     
-    logger.info(f"Uploaded to {s3_path}")
+    print(f"[SUCCESS] Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
 
@@ -92,8 +90,7 @@ def GOLD_generate_mismatch_distribution(
     Returns:
     - S3 path to the generated PNG image
     """
-    logger = get_logger(__name__, context)
-    logger.info("Generating mismatch distribution (Cloud Run)")
+    print("[TASK] Generating mismatch distribution (Cloud Run)")
     
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
@@ -145,12 +142,11 @@ def _post_process_table(df, con, result_dict):
     from utils.s3 import upload_to_s3_rustfs
     
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
-    logger = get_logger(__name__)
     save_id = os.environ.get('REPORT_SAVE_ID')
     bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
-        logger.warning("No data to visualize")
+        print("[WARNING] No data to visualize")
         return {'status': 'skipped', 'message': 'No data available'}
     
     df["actual_trips"] = df["actual_trips"].round(2)
@@ -281,7 +277,7 @@ def _post_process_table(df, con, result_dict):
         bucket_name=bucket_name
     )
     
-    logger.info(f"Uploaded to {s3_path}")
+    print(f"[SUCCESS] Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
 
@@ -307,8 +303,7 @@ def GOLD_generate_table(
     Returns:
     - S3 path to the generated HTML table
     """
-    logger = get_logger(__name__, context)
-    logger.info("Generating table of gravity model (Cloud Run)")
+    print("[TASK] Generating table of gravity model (Cloud Run)")
     
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
@@ -366,13 +361,12 @@ def _post_process_mismatch_map(df, con, result_dict):
     from utils.s3 import upload_to_s3_rustfs
     
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
-    logger = get_logger(__name__)
     save_id = os.environ.get('REPORT_SAVE_ID')
     polygon_wkt = os.environ.get('REPORT_POLYGON_WKT')
     bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
-        logger.warning("No data to visualize")
+        print("[WARNING] No data to visualize")
         return {'status': 'skipped', 'message': 'No data available'}
     
     def classify_mm(x):
@@ -475,7 +469,7 @@ def _post_process_mismatch_map(df, con, result_dict):
         bucket_name=bucket_name
     )
     
-    logger.info(f"Uploaded to {s3_path}")
+    print(f"[SUCCESS] Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
 
@@ -501,8 +495,7 @@ def GOLD_generate_mismatch_map(
     Returns:
     - S3 path to the generated HTML map
     """
-    logger = get_logger(__name__, context)
-    logger.info("Generating mismatch map (Cloud Run)")
+    print("[TASK] Generating mismatch map (Cloud Run)")
     
     sql_query = f"""
         INSTALL spatial; LOAD spatial;

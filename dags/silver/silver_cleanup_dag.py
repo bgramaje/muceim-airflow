@@ -20,7 +20,6 @@ from airflow.models import Param
 from airflow.sdk import Variable
 from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
-from utils.logger import get_logger
 
 SOURCE_TABLE_PATTERNS = {
     'mitma': {
@@ -43,8 +42,6 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
     from utils.utils import get_ducklake_connection
     
-    logger = get_logger(__name__, context)
-    
     rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
     params = context.get('params', {})
     source = params.get('source', 'all')
@@ -53,8 +50,8 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     source_config = SOURCE_TABLE_PATTERNS.get(source, SOURCE_TABLE_PATTERNS['all'])
     table_pattern = source_config['pattern']
     
-    logger.info(f"Source: {source}")
-    logger.info(f"Listing files in bucket '{rustfs_bucket}' for tables matching '{table_pattern}'")
+    print(f"[CLEANUP] Source: {source}")
+    print(f"[CLEANUP] Listing files in bucket '{rustfs_bucket}' for tables matching '{table_pattern}'")
     
     con = get_ducklake_connection()
     
@@ -72,7 +69,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     if dataset != 'all':
         table_names = [t for t in table_names if f'_{dataset}' in t or t.endswith(f'_{dataset}')]
     
-    logger.info(f"Found {len(table_names)} matching tables: {table_names}")
+    print(f"[CLEANUP] Found {len(table_names)} matching tables: {table_names}")
     
     if not table_names:
         return {
@@ -88,7 +85,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     
     try:
         if not s3_hook.check_for_bucket(rustfs_bucket):
-            logger.warning(f"Bucket '{rustfs_bucket}' does not exist")
+            print(f"[CLEANUP] Bucket '{rustfs_bucket}' does not exist")
             return {
                 'bucket': rustfs_bucket,
                 'files': [],
@@ -98,7 +95,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
                 'source': source
             }
     except Exception as e:
-        logger.error(f"Error checking bucket: {e}", exc_info=True)
+        print(f"[CLEANUP] Error checking bucket: {e}")
         return {
             'bucket': rustfs_bucket,
             'files': [],
@@ -151,11 +148,10 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
             files_by_table[table_name] = len(table_files)
             
         except Exception as e:
-            logger.warning(f"Error listing files for table '{table_name}': {e}")
+            print(f"[CLEANUP] Error listing files for table '{table_name}': {e}")
             files_by_table[table_name] = 0
     
-    total_size_mb = round(total_size / (1024 * 1024), 2)
-    logger.info(f"Found {len(all_files)} files ({total_size_mb} MB) in {len(table_names)} tables")
+    print(f"[CLEANUP] Found {len(all_files)} files ({round(total_size / (1024 * 1024), 2)} MB) in {len(table_names)} tables")
     
     summary = {}
     for f in all_files:
@@ -179,13 +175,10 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
 
 @task
 def delete_rustfs_files(
-    file_info: Dict[str, Any] = None,
-    **context
+    file_info: Dict[str, Any] = None
 ) -> Dict[str, Any]:
     """Deletes files from RustFS bucket. Returns dict with deletion status and counts."""
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-    
-    logger = get_logger(__name__, context)
     
     rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
     
@@ -200,7 +193,6 @@ def delete_rustfs_files(
     source = file_info.get('source', 'unknown')
     
     if not files:
-        logger.info("No files to delete, skipping")
         return {
             'status': 'skipped',
             'reason': 'no_files',
@@ -208,7 +200,7 @@ def delete_rustfs_files(
             'source': source
         }
     
-    logger.info(f"Deleting {total_count} files ({total_size_mb} MB) for source '{source}'")
+    print(f"[CLEANUP] Deleting {total_count} files ({total_size_mb} MB) for source '{source}'")
     
     s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
     s3_client = s3_hook.get_conn()
@@ -238,13 +230,13 @@ def delete_rustfs_files(
                     })
             
         except Exception as e:
-            logger.error(f"Error deleting batch {i // batch_size}: {e}", exc_info=True)
+            print(f"[CLEANUP] Error deleting batch: {e}")
             errors.append({'batch': i // batch_size, 'error': str(e)})
     
-    logger.info(f"Deleted {deleted}/{total_count} files")
+    print(f"[CLEANUP] Deleted {deleted}/{total_count} files")
     
     if errors:
-        logger.warning(f"{len(errors)} errors occurred during deletion")
+        print(f"[CLEANUP] {len(errors)} errors occurred")
     
     return {
         'status': 'success' if not errors else 'partial',
@@ -260,8 +252,6 @@ def list_silver_tables(**context) -> Dict[str, Any]:
     """Lists silver tables matching the selected source. Returns dict with table names and counts."""
     from utils.utils import get_ducklake_connection
     
-    logger = get_logger(__name__, context)
-    
     params = context.get('params', {})
     source = params.get('source', 'all')
     dataset = params.get('dataset', 'all')
@@ -269,8 +259,8 @@ def list_silver_tables(**context) -> Dict[str, Any]:
     source_config = SOURCE_TABLE_PATTERNS.get(source, SOURCE_TABLE_PATTERNS['all'])
     table_pattern = source_config['pattern']
     
-    logger.info(f"Source: {source}")
-    logger.info(f"Listing tables matching '{table_pattern}'")
+    print(f"[CLEANUP] Source: {source}")
+    print(f"[CLEANUP] Listing tables matching '{table_pattern}'")
     
     con = get_ducklake_connection()
     
@@ -288,7 +278,7 @@ def list_silver_tables(**context) -> Dict[str, Any]:
     if dataset != 'all':
         table_names = [t for t in table_names if f'_{dataset}' in t or t.endswith(f'_{dataset}')]
     
-    logger.info(f"Found {len(table_names)} matching tables: {table_names}")
+    print(f"[CLEANUP] Found {len(table_names)} matching tables: {table_names}")
     
     return {
         'tables': table_names,
@@ -319,20 +309,18 @@ def drop_silver_tables(
             'source': source
         }
     
-    logger = get_logger(__name__, context)
-    
     table_names = tables if isinstance(tables, list) else []
     drop_statements = [f"DROP TABLE IF EXISTS {table_name};" for table_name in table_names]
     sql_query = "\n".join(drop_statements)
     
-    logger.warning(f"⚠️  DROPPING {len(table_names)} {source} tables (complete deletion)")
+    print(f"[CLEANUP] ⚠️  DROPPING {len(table_names)} {source} tables (complete deletion)")
     for t in table_names:
-        logger.warning(f"  - {t}")
+        print(f"[CLEANUP]   - {t}")
     
     try:
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         
-        logger.info(f"✅ Dropped {len(table_names)} tables")
+        print(f"[CLEANUP] ✅ Dropped {len(table_names)} tables")
         
         return {
             'status': 'success',
@@ -344,7 +332,7 @@ def drop_silver_tables(
         }
         
     except Exception as e:
-        logger.error(f"❌ Error dropping tables: {e}", exc_info=True)
+        print(f"[CLEANUP] ❌ Error dropping tables: {e}")
         return {
             'status': 'error',
             'dropped': 0,

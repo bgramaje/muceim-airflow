@@ -4,12 +4,10 @@ from typing import Dict
 import time
 from airflow.sdk import Variable  # type: ignore
 from google.cloud import run_v2  # type: ignore
-from utils.logger import get_logger
 
 
 def _get_cloud_run_logs(execution_name: str) -> None:
-    """Retrieves and logs the last logs from a Cloud Run execution."""
-    logger = get_logger(__name__)
+    """Retrieves and prints the last logs from a Cloud Run execution."""
     try:
         from google.cloud import logging as cloud_logging
         
@@ -36,11 +34,11 @@ def _get_cloud_run_logs(execution_name: str) -> None:
                 cloud_run_logs.append(log_text[:1000])
         
         if cloud_run_logs:
-            logger.info("Last logs from Cloud Run execution:")
+            print("\n[CLOUD_RUN_LOGS] Last logs from Cloud Run execution:")
             for log in cloud_run_logs[:10]:
-                logger.info(f"  {log}")
+                print(f"  {log}")
     except Exception as log_error:
-        logger.warning(f"Could not retrieve Cloud Run logs: {str(log_error)}")
+        print(f"[WARNING] Could not retrieve Cloud Run logs: {str(log_error)}")
 
 
 def _is_execution_succeeded(state) -> bool:
@@ -62,12 +60,11 @@ def _wait_for_cloud_run_execution(
     poll_interval: int = 10
 ) -> None:
     """Waits for Cloud Run execution to complete and verifies its status. Raises RuntimeError on failure or timeout."""
-    logger = get_logger(__name__)
     start_time = time.time()
     last_log_time = start_time
     log_interval = 60  # Log status every 60 seconds
     
-    logger.info(f"Waiting for execution to complete: {execution_name}")
+    print(f"[CLOUD_RUN] Waiting for execution to complete: {execution_name}")
     
     while True:
         elapsed = time.time() - start_time
@@ -81,14 +78,14 @@ def _wait_for_cloud_run_execution(
             completion_time = getattr(execution, 'completion_time', None)
             if completion_time:
                 # Execution has completed, check final status
-                logger.info(f"Execution completed at {completion_time}")
+                print(f"[CLOUD_RUN] Execution completed at {completion_time}")
                 
                 # Check task counts
                 succeeded_count = getattr(execution, 'succeeded_count', 0)
                 failed_count = getattr(execution, 'failed_count', 0)
                 running_count = getattr(execution, 'running_count', 0)
                 
-                logger.info(f"Task counts - Succeeded: {succeeded_count}, Failed: {failed_count}, Running: {running_count}")
+                print(f"[CLOUD_RUN] Task counts - Succeeded: {succeeded_count}, Failed: {failed_count}, Running: {running_count}")
                 
                 # Find Ready condition to get final status
                 ready_condition = None
@@ -104,7 +101,7 @@ def _wait_for_cloud_run_execution(
                     state_str = str(state).upper() if state else "UNKNOWN"
                     
                     if _is_execution_succeeded(state):
-                        logger.info("Execution succeeded")
+                        print(f"[CLOUD_RUN] Execution succeeded")
                         return
                     
                     if _is_execution_failed(state):
@@ -131,12 +128,12 @@ def _wait_for_cloud_run_execution(
                         raise RuntimeError(f"Execution failed: {failed_count} task(s) failed. Execution: {execution_name}")
                     
                     if succeeded_count > 0 and running_count == 0:
-                        logger.info(f"Execution completed successfully ({succeeded_count} task(s) succeeded)")
+                        print(f"[CLOUD_RUN] Execution completed successfully ({succeeded_count} task(s) succeeded)")
                         return
                 
                 # If completion_time is set but we can't determine status, assume success if no failures
                 if failed_count == 0:
-                    logger.info("Execution completed (no failures detected)")
+                    print(f"[CLOUD_RUN] Execution completed (no failures detected)")
                     return
                 else:
                     raise RuntimeError(f"Execution completed with failures: {failed_count} task(s) failed. Execution: {execution_name}")
@@ -155,7 +152,7 @@ def _wait_for_cloud_run_execution(
                 running_count = getattr(execution, 'running_count', 0)
                 succeeded_count = getattr(execution, 'succeeded_count', 0)
                 failed_count = getattr(execution, 'failed_count', 0)
-                logger.info(f"Still waiting... Elapsed: {int(elapsed)}s | Running: {running_count}, Succeeded: {succeeded_count}, Failed: {failed_count}")
+                print(f"[CLOUD_RUN] Still waiting... Elapsed: {int(elapsed)}s | Running: {running_count}, Succeeded: {succeeded_count}, Failed: {failed_count}")
                 last_log_time = time.time()
             
             # Check if execution failed while still running
@@ -173,7 +170,7 @@ def _wait_for_cloud_run_execution(
         except Exception as e:
             # Log the error but continue polling (might be transient)
             if time.time() - last_log_time >= log_interval:
-                logger.warning(f"Error checking execution status (will retry): {str(e)}")
+                print(f"[CLOUD_RUN] Error checking execution status (will retry): {str(e)}")
                 last_log_time = time.time()
             time.sleep(poll_interval)
 
@@ -276,16 +273,14 @@ def _serialize_post_process_func(post_process_func) -> Dict[str, str] | None:
                 )
                 helper_code = helper_code + '\n\n'
             except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Could not include upload_to_s3_rustfs helper: {str(e)}")
+                print(f"[WARNING] Could not include upload_to_s3_rustfs helper: {str(e)}")
         
         if constants:
             full_code = '\n'.join(constants) + '\n\n' + helper_code + func_code
         else:
             full_code = helper_code + func_code
         
-        logger = get_logger(__name__)
-        logger.info("Serialized post_process_func (imports are inside the function)")
+        print(f"[INFO] Serialized post_process_func (imports are inside the function)")
         
         compressed = zlib.compress(full_code.encode('utf-8'))
         encoded = base64.b64encode(compressed).decode('utf-8')
@@ -295,9 +290,8 @@ def _serialize_post_process_func(post_process_func) -> Dict[str, str] | None:
             'POST_PROCESS_FUNC_NAME': post_process_func.__name__
         }
     except Exception as e:
-        logger = get_logger(__name__)
-        logger.warning(f"Could not serialize post_process_func: {str(e)}")
-        logger.warning("Post-processing will be skipped in Cloud Run")
+        print(f"[WARNING] Could not serialize post_process_func: {str(e)}")
+        print("[WARNING] Post-processing will be skipped in Cloud Run")
         return None
 
 
@@ -425,8 +419,9 @@ def execute_sql_or_cloud_run(sql_query: str, post_process_func=None, **context) 
                     if post_result and isinstance(post_result, dict):
                         result.update(post_result)
                 except Exception as e:
-                    logger = get_logger(__name__)
-                    logger.error(f"post-processing failed: {str(e)}", exc_info=True)
+                    print(f"[ERROR] post-processing failed: {str(e)}")
+                    import traceback
+                    print(f"Traceback: {traceback.format_exc()}")
             
             return result
             

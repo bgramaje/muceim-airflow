@@ -1,7 +1,6 @@
 from airflow.sdk import task  # type: ignore
 
 from utils.utils import get_ducklake_connection
-from utils.logger import get_logger
 
 
 @task.branch
@@ -23,9 +22,8 @@ def SILVER_verify_mapping_coverage(**context):
     start_param = context['params'].get('start')
     year = start_param[:4] if start_param else None
     
-    logger = get_logger(__name__, context)
     if not year:
-        logger.info("No start date provided in params. Processing all INE tasks.")
+        print("[TASK] No start date provided in params. Processing all INE tasks.")
         return ['ine_processing.business', 'ine_processing.population', 'ine_processing.income']
 
     try:
@@ -43,17 +41,17 @@ def SILVER_verify_mapping_coverage(**context):
         
         difference_count = len(difference_df)
         
-        logger.info(f"Zones in silver_ine_all (year={year}) not found in silver_mitma_ine_mapping: {difference_count}")
+        print(f"[TASK] Zones in silver_ine_all (year={year}) not found in silver_mitma_ine_mapping: {difference_count}")
         
         if difference_count > 0:
-            logger.info(f"Missing zones found. Processing INE tasks: {difference_df['id'].tolist()}")
+            print(f"[TASK] Missing zones found. Processing INE tasks: {difference_df['id'].tolist()}")
             return ['ine_processing.business', 'ine_processing.population', 'ine_processing.income']
         else:
-            logger.info("All zones are covered in mapping. Skipping INE processing.")
+            print(f"[TASK] All zones are covered in mapping. Skipping INE processing.")
             return 'ine_processing.done'
 
     except Exception as e:
-        logger.warning(f"silver_ine_all table does not exist or error: {e}")
+        print(f"silver_ine_all table does not exist or error: {e}")
         return ['ine_processing.business', 'ine_processing.population', 'ine_processing.income']
     finally:
         con.close()

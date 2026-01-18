@@ -114,14 +114,12 @@ def create_zonification_group(dag: DAG):
         @task.branch
         def check_zonification_enabled(**context):
             """Check if zonification processing is enabled via params."""
-            from utils.logger import get_logger
-            logger = get_logger(__name__, context)
             enabled = context['params'].get('process_zonification', True)
             if enabled:
-                logger.info("Zonification processing is enabled")
+                print("[TASK] Zonification processing is enabled")
                 return "zonification_distances.zonification"
             else:
-                logger.info("Zonification processing is disabled")
+                print("[TASK] Zonification processing is disabled")
                 return "zonification_distances.skipped"
         
         check_enabled = check_zonification_enabled.override(
@@ -152,14 +150,12 @@ def create_ine_group_with_branch(dag: DAG):
         @task.branch
         def check_ine_enabled(**context):
             """Check if INE processing is enabled via params."""
-            from utils.logger import get_logger
-            logger = get_logger(__name__, context)
             enabled = context['params'].get('process_ine', True)
             if enabled:
-                logger.info("INE processing is enabled")
+                print("[TASK] INE processing is enabled")
                 return "ine_processing.verify_mapping_coverage"
             else:
-                logger.info("INE processing is disabled")
+                print("[TASK] INE processing is disabled")
                 return "ine_processing.skipped"
         
         check_enabled = check_ine_enabled.override(

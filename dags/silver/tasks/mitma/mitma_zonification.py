@@ -7,19 +7,17 @@ for distritos, municipios, and GAU zone types.
 from airflow.sdk import task # type: ignore
 
 from utils.utils import get_ducklake_connection, load_extension
-from utils.logger import get_logger
 
 
 @task
-def SILVER_mitma_zonification(**context):
+def SILVER_mitma_zonification():
     """
     Airflow task to transform and standarize zonification data into DuckDB for the specified type.
 
     Returns:
     - Dict with task status and info
     """
-    logger = get_logger(__name__, context)
-    logger.info("Building unified silver zonification table")
+    print("[TASK] Building unified silver zonification table")
     
     con = get_ducklake_connection()
 
@@ -48,8 +46,7 @@ def SILVER_mitma_zonification(**context):
             ON base.id = s.municipio_mitma
     """)
 
-    sample_df = con.execute("SELECT * FROM silver_zones LIMIT 10").fetchdf()
-    logger.debug(f"Sample data: {sample_df}")
+    print(con.execute("SELECT * FROM silver_zones LIMIT 10").fetchdf())
 
     return {
         "status": "success",

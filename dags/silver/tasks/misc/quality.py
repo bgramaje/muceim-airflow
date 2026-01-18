@@ -13,7 +13,6 @@ from typing import List, Dict, Any
 
 from utils.gcp import execute_sql_or_cloud_run
 from utils.utils import get_ducklake_connection
-from utils.logger import get_logger
 
 
 @task
@@ -28,8 +27,7 @@ def SILVER_od_quality_get_date_batches(batch_size: int = 2, **context) -> List[D
     Returns:
     - Lista de diccionarios con 'fechas' (lista de fechas) y 'batch_index' para cada batch
     """
-    logger = get_logger(__name__, context)
-    logger.info(f"Getting unprocessed quality dates (batch_size: {batch_size})")
+    print(f"[TASK] Getting unprocessed quality dates (batch_size: {batch_size})")
     
     con = get_ducklake_connection()
     
@@ -51,17 +49,17 @@ def SILVER_od_quality_get_date_batches(batch_size: int = 2, **context) -> List[D
         df = con.execute(query).fetchdf()
         
         if df.empty:
-            logger.info("No unprocessed quality dates found for silver_mitma_od_quality")
+            print("[TASK] No unprocessed quality dates found for silver_mitma_od_quality")
             return []
         
         fechas = [str(fecha) for fecha in df['fecha'].unique()]
         fechas = sorted(fechas)
         
         if not fechas:
-            logger.info("No valid unprocessed quality dates found")
+            print("[TASK] No valid unprocessed quality dates found")
             return []
         
-        logger.info(f"Total unprocessed quality dates: {len(fechas)}")
+        print(f"[TASK] Total unprocessed quality dates: {len(fechas)}")
         
         batches = []
         batch_index = 0
@@ -76,14 +74,16 @@ def SILVER_od_quality_get_date_batches(batch_size: int = 2, **context) -> List[D
             
             batch_index += 1
         
-        logger.info(f"Created {len(batches)} batches")
+        print(f"[TASK] Created {len(batches)} batches")
         for i, batch in enumerate(batches, 1):
-            logger.debug(f"  Batch {i}: {len(batch['fechas'])} dates (from {batch['fechas'][0]} to {batch['fechas'][-1]})")
+            print(f"[TASK]   Batch {i}: {len(batch['fechas'])} dates (from {batch['fechas'][0]} to {batch['fechas'][-1]})")
         
         return batches
         
     except Exception as e:
-        logger.error(f"Error getting date batches: {e}", exc_info=True)
+        print(f"[TASK] Error getting date batches: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
@@ -98,8 +98,7 @@ def SILVER_od_quality_create_table(**context) -> Dict:
     Returns:
     - Dict con status de la creación de la tabla
     """
-    logger = get_logger(__name__, context)
-    logger.info("Creating silver_mitma_od_quality table if it doesn't exist")
+    print("[TASK] Creating silver_mitma_od_quality table if it doesn't exist")
     
     con = get_ducklake_connection()
     
@@ -137,9 +136,9 @@ def SILVER_od_quality_create_table(**context) -> Dict:
     # Solo aplicar particionado si la tabla es nueva o está vacía
     # NOTA: Se usa INSERT INTO en lugar de MERGE debido a bug de DuckLake
     if not table_exists:
-        con.execute(            "ALTER TABLE silver_mitma_od_quality SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));")
+        con.execute("ALTER TABLE silver_mitma_od_quality SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));")
     
-    logger.info("Tables created/verified successfully")
+    print("[TASK] Tables created/verified successfully")
     
     return {
         "status": "success",
@@ -163,9 +162,8 @@ def SILVER_od_quality_process_batch(date_batch: Dict[str, Any], **context) -> Di
     Returns:
     - Dict con status y metadata del batch procesado
     """
-    logger = get_logger(__name__, context)
-    logger.debug(f"date_batch type: {type(date_batch)}")
-    logger.debug(f"date_batch content: {date_batch}")
+    print(f"[TASK] DEBUG: date_batch type: {type(date_batch)}")
+    print(f"[TASK] DEBUG: date_batch content: {date_batch}")
     
     # Handle both dict and direct list cases
     if isinstance(date_batch, dict):
@@ -183,7 +181,7 @@ def SILVER_od_quality_process_batch(date_batch: Dict[str, Any], **context) -> Di
     # Crear lista de fechas para la query
     fechas_str = "', '".join(str(f) for f in fechas)
     
-    logger.info(f"Processing quality batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
+    print(f"[TASK] Processing quality batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
     
     # INSERT INTO en lugar de MERGE debido a bug de DuckLake con particionado + MERGE
     sql_query = f"""
@@ -291,7 +289,7 @@ def SILVER_od_quality_process_batch(date_batch: Dict[str, Any], **context) -> Di
     
     result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
     
-    logger.info(f"Quality batch {batch_index} processed successfully: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
+    print(f"[TASK] Quality batch {batch_index} processed successfully: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
     
     return {
         "status": "success",

@@ -1,7 +1,6 @@
 from airflow.sdk import task
 
 from utils.utils import get_ducklake_connection
-from utils.logger import get_logger
 
 
 @task
@@ -12,10 +11,9 @@ def SILVER_ine_poblacion_municipio(**context):
     """
     con = get_ducklake_connection()
 
-    logger = get_logger(__name__, context)
     year = context['params'].get('start', '')[
         :4] if context['params'].get('start') else ''
-    logger.info(f"Using year: {year}")
+    print(f"Using year: {year}")
 
     query = f"""
         CREATE OR REPLACE TABLE silver_ine_poblacion_municipio AS (

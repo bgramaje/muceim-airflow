@@ -26,21 +26,6 @@
 ]{biblatex}
 \addbibresource{references.bib}
 \usepackage[font=footnotesize]{caption}
-\usepackage{listings}
-\usepackage{xcolor}
-
-% Configure listings package
-\lstset{
-    basicstyle=\ttfamily\footnotesize,
-    breaklines=true,
-    breakatwhitespace=true,
-    frame=single,
-    numbers=left,
-    numberstyle=\tiny\color{gray},
-    keywordstyle=\color{blue},
-    stringstyle=\color{red},
-    commentstyle=\color{green!60!black}
-}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % INICIO DOCUMENTO
@@ -137,171 +122,7 @@ A clear example of the real-world applicability of this question is the characte
 
 \subsection{Data sources}
 
-The Lakehouse architecture ingests data from three primary sources, each requiring different extraction mechanisms and handling strategies. Table~\ref{tab:data_sources_summary} provides an overview of the data sources, their formats, and update frequencies.
-
-\begin{table}[H]
-\centering
-\begin{tabular}{p{3cm} p{4cm} p{2.5cm} p{3.5cm}}
-\toprule
-\textbf{Source} & \textbf{Data Type} & \textbf{Format} & \textbf{Frequency} \\
-\midrule
-MITMA & Mobility matrices, Zoning & CSV.GZ, Shapefiles & Daily \\
-INE & Socioeconomic indicators & JSON (REST API) & Annual \\
-OpenHolidays & National holidays & JSON (REST API) & On-demand \\
-\bottomrule
-\end{tabular}
-\caption{Summary of data sources and their characteristics}
-\label{tab:data_sources_summary}
-\end{table}
-
-\subsubsection*{MITMA (Ministry of Transport, Mobility and Urban Agenda)}
-
-The MITMA provides mobility data through an RSS feed that publishes daily updates of origin-destination matrices. The data extraction process involves parsing the RSS XML feed to identify available CSV files, filtering by date range and zone type, and downloading compressed files for processing.
-
-\textbf{RSS Feed and URL Structure:}
-
-The primary data source is the MITMA RSS feed located at \url{https://movilidad-opendata.mitma.es/RSS.xml}. This feed contains links to daily CSV files organized by zone type (\texttt{municipios}, \texttt{distritos}, or \texttt{gau}) and dataset type. The system parses this XML feed using regular expressions to extract URLs matching the following pattern:
-
-\begin{lstlisting}[language=bash]
-https://movilidad-opendata.mitma.es/estudios_basicos/
-  por-{zone_type}/viajes/ficheros-diarios/
-  {YYYY-MM}/{YYYYMMDD}_Viajes_{zone_type}.csv.gz
-\end{lstlisting}
-
-For example, a file for March 6, 2023 at the municipality level would be:
-\begin{lstlisting}[language=bash]
-https://movilidad-opendata.mitma.es/estudios_basicos/
-  por-municipios/viajes/ficheros-diarios/2023-03/
-  20230306_Viajes_municipios.csv.gz
-\end{lstlisting}
-
-\textbf{Origin-Destination Data Structure:}
-
-Each CSV file contains origin-destination mobility matrices with the structure shown in Table~\ref{tab:mitma_od_structure}. Files are compressed using gzip, with typical sizes ranging from 50-100 MB per day for municipality-level data.
-
-\begin{table}[H]
-\centering
-\begin{tabular}{p{2.5cm} p{3cm} p{6cm}}
-\toprule
-\textbf{Column} & \textbf{Type (Bronze)} & \textbf{Description} \\
-\midrule
-\texttt{fecha} & TIMESTAMP & Date parsed from YYYYMMDD format \\
-\texttt{periodo} & VARCHAR & Hour of day (0-23) \\
-\texttt{origen} & VARCHAR & Origin zone identifier \\
-\texttt{destino} & VARCHAR & Destination zone identifier \\
-\texttt{viajes} & VARCHAR & Number of trips (as string) \\
-\texttt{viajes\_km} & VARCHAR & Total distance traveled (as string) \\
-\texttt{distancia} & VARCHAR & Distance category or band \\
-\texttt{residencia} & VARCHAR & Residence classification \\
-\bottomrule
-\end{tabular}
-\caption{Structure of MITMA origin-destination CSV files}
-\label{tab:mitma_od_structure}
-\end{table}
-
-The extraction process downloads files sequentially to avoid overwhelming local resources, then stages them in RustFS for parallel processing by Cloud Run Jobs.
-
-\textbf{Zonification Data:}
-
-In addition to mobility matrices, MITMA provides zoning reference data including geometric boundaries (polygons) for each zone. This data is extracted from the RSS feed by matching patterns for Shapefile components (\texttt{.shp}, \texttt{.shx}, \texttt{.dbf}, \texttt{.prj}) and supplementary CSV files containing zone names and population metadata. The geometry data is stored as Well-Known Text (WKT) strings in the Bronze layer.
-
-\textbf{MITMA-INE Relations:}
-
-A critical mapping table is extracted from a static CSV file published by MITMA at \url{https://movilidad-opendata.mitma.es/zonificacion/relacion_ine_zonificacionMitma.csv}. This table establishes the correspondence between MITMA zone identifiers and INE municipality codes, enabling integration of mobility data with socioeconomic indicators. The file uses pipe-delimited format (\texttt{|}) and is read directly from its URL using DuckDB's \texttt{read\_csv()} function.
-
-\subsubsection*{INE (National Statistics Institute)}
-
-The INE provides socioeconomic and demographic data through a REST API that returns JSON responses. Unlike MITMA's file-based approach, INE data requires HTTP requests to specific endpoints with query parameters.
-
-\textbf{API Endpoints:}
-
-All INE data is accessed through the base URL \url{https://servicios.ine.es/wstempus/js/ES/}, with specific endpoints for different datasets as shown in Table~\ref{tab:ine_endpoints}.
-
-\begin{table}[H]
-\centering
-\begin{tabular}{p{3cm} p{5cm} p{4.5cm}}
-\toprule
-\textbf{Dataset} & \textbf{Endpoint Pattern} & \textbf{Description} \\
-\midrule
-Municipalities & \texttt{VALORES\_VARIABLE/19} & Catalog of all Spanish municipalities with INE codes and names \\
-Companies & \texttt{DATOS\_TABLA/3955?tip=AM\&date=\{year\}0101} & Number of registered companies per municipality and year \\
-Population & \texttt{DATOS\_TABLA/29005?date=\{year\}0101:\{year\}1231} & Population counts by municipality, sex, and year \\
-Income & \texttt{DATOS\_TABLA/\{id\}?date=\{year\}0101} & Average income per capita (52 table IDs: 30656-31295) \\
-\bottomrule
-\end{tabular}
-\caption{INE API endpoints and their purposes}
-\label{tab:ine_endpoints}
-\end{table}
-
-\textbf{JSON Structure and Parsing:}
-
-INE API responses use a nested JSON structure where each municipality entry contains a \texttt{Data} array with time-series values. The population endpoint, for example, returns data in the following format:
-
-\begin{lstlisting}[language=json]
-[
-  {
-    "COD": "28079",
-    "Nombre": "Madrid",
-    "Data": [
-      {"Fecha": "20230101", "Valor": 3300000},
-      {"Fecha": "20220101", "Valor": 3250000}
-    ]
-  }
-]
-\end{lstlisting}
-
-The extraction process uses DuckDB's \texttt{read\_json()} function with \texttt{format='array'} to parse these responses directly from URLs. For datasets with nested \texttt{Data} arrays, the system uses \texttt{UNNEST()} operations in the Silver layer to explode time-series data into individual rows.
-
-\textbf{Dynamic URL Generation:}
-
-The system generates URLs dynamically based on the target year. For income data, which spans 52 different table IDs, the system creates a list of URLs using dynamic task mapping in Airflow, enabling parallel processing of all endpoints. Each URL includes the year parameter in the format \texttt{?date=\{year\}0101} to retrieve data for the specified year.
-
-\subsubsection*{Spanish National Holidays}
-
-Holiday data is generated programmatically using the OpenHolidays API, which provides a standardized source of public holidays for Spain. The extraction process queries the API endpoint with the following structure:
-
-\begin{lstlisting}[language=bash]
-https://openholidaysapi.org/PublicHolidays?
-  countryIsoCode=ES&
-  languageIsoCode=ES&
-  validFrom={year}-01-01&
-  validTo={year}-12-31
-\end{lstlisting}
-
-The API returns a JSON array of holiday objects, from which the system extracts only nationwide holidays (\texttt{nationwide = true}), filtering out regional holidays. Each record contains:
-\begin{itemize}
-    \item \texttt{startDate}: Holiday date (parsed to DATE type)
-    \item \texttt{name[1].text}: Holiday name in Spanish
-\end{itemize}
-
-This data is used in the Silver layer to enrich mobility records with \texttt{is\_holiday} flags, enabling temporal analysis that distinguishes between regular days and national holidays.
-
-\subsubsection*{Extraction Workflow}
-
-The data extraction process follows a consistent five-phase pattern across all sources, ensuring reliability and idempotency:
-
-\begin{enumerate}
-    \item \textbf{URL Discovery:} 
-    \begin{itemize}
-        \item MITMA: Parse RSS feed using regular expressions to extract file URLs
-        \item INE: Generate URLs based on year and table IDs programmatically
-        \item Holidays: Construct API URL with year parameters
-    \end{itemize}
-    
-    \item \textbf{Idempotency Check:} Filter URLs against existing \texttt{source\_file} or \texttt{source\_url} columns in Bronze tables to skip already-ingested data. This enables safe re-execution of DAGs without data duplication.
-    
-    \item \textbf{Download/Request:} 
-    \begin{itemize}
-        \item MITMA: Download CSV files sequentially to local staging (RustFS bucket)
-        \item INE and Holidays: Execute HTTP requests directly from Cloud Run Jobs
-    \end{itemize}
-    
-    \item \textbf{Ingestion:} Use DuckDB's native functions (\texttt{read\_csv()}, \texttt{read\_json()}) to load data into Bronze tables with metadata tracking (\texttt{loaded\_at}, \texttt{source\_file}/\texttt{source\_url}).
-    
-    \item \textbf{Cleanup:} Remove temporary staging files from RustFS after successful ingestion to manage storage costs.
-\end{enumerate}
-
-This approach ensures reliable, idempotent data ingestion while maintaining full lineage tracking through source URL/file columns in the Bronze layer, enabling complete auditability and reprocessing capabilities.
+Explicar cada fuente de datos y que extraemos de ella. Como los extraemos (APIs...)
 
 \subsection{Technical environment and infrastructure}
 
@@ -364,6 +185,8 @@ The Bronze layer ingests data from three primary sources:
 \textbf{MITMA (Ministry of Transport, Mobility and Urban Agenda):}
 \begin{itemize}
     \item \texttt{bronze\_mitma\_od\_municipios}: Origin-destination mobility matrices by municipality, date, and hour. Data extracted from MITMA RSS feeds, with each CSV file containing daily trip volumes between zone pairs.
+    \item \texttt{bronze\_mitma\_people\_day\_municipios}: Daily population presence by zone, age group, sex, and travel frequency category.
+    \item \texttt{bronze\_mitma\_overnight\_stay\_municipios}: Overnight stay flows linking residence zones to stay zones.
     \item \texttt{bronze\_mitma\_municipios}: Zoning reference data including geometric boundaries (polygons) for each municipality.
     \item \texttt{bronze\_mitma\_ine\_relations}: Mapping table connecting MITMA zone identifiers to INE municipality codes.
 \end{itemize}
@@ -450,6 +273,7 @@ The Silver Layer applies rigorous data quality transformations, type casting, an
 
 \textbf{\texttt{silver\_ine\_all}:} Consolidated table joining all INE socioeconomic indicators with zone identifiers. This table performs LEFT JOINs from \texttt{silver\_zones} to individual INE tables (empresas, poblacion, renta), using \texttt{COALESCE()} to handle missing data with default values of 0. The table includes a \texttt{year} column extracted from processing parameters to support multi-year analyses.
 
+\textbf{\texttt{silver\_people\_day} and \texttt{silver\_overnight\_stay}:} These tables maintain the same granularity as their Bronze counterparts but with proper type casting and date normalization. They are partitioned by \texttt{fecha} for efficient temporal queries.
 
 \subsubsection*{Data quality metrics}
 
@@ -547,16 +371,23 @@ The following diagrams illustrate the Airflow DAG structures for Bronze and Silv
     \node[task] (od_process) at (-3, -1.5) {od\_process};
     \node[task] (od_cleanup) at (-3, -2.5) {od\_cleanup};
     
-    \node[task] (zonif_urls) at (0, 4.5) {zonif\_urls};
-    \node[task] (zonif_check) at (0, 3.5) {check\_urls};
-    \node[task] (zonif) at (0, 2.5) {zonif};
+    \node[task] (people_urls) at (0, 4.5) {people\_urls};
+    \node[task] (people_filter) at (0, 3.5) {people\_filter};
+    \node[task] (people_check) at (0, 2.5) {check\_urls};
+    \node[task] (people_create) at (0, 1.5) {people\_create};
+    \node[task] (people_insert) at (0, 0.5) {people\_insert};
     
-    \node[task] (ine_relations) at (3, 4.5) {relations};
+    \node[task] (zonif_urls) at (3, 4.5) {zonif\_urls};
+    \node[task] (zonif_check) at (3, 3.5) {check\_urls};
+    \node[task] (zonif) at (3, 2.5) {zonif};
     
-    \node[task] (done) at (0, -3.5) {done};
+    \node[task] (ine_relations) at (6, 4.5) {relations};
+    
+    \node[task] (done) at (1.5, -3.5) {done};
     
     % Arrows
     \draw[arrow] (infra) -- (od_urls);
+    \draw[arrow] (infra) -- (people_urls);
     \draw[arrow] (infra) -- (zonif_urls);
     \draw[arrow] (infra) -- (ine_relations);
     
@@ -568,15 +399,21 @@ The following diagrams illustrate the Airflow DAG structures for Bronze and Silv
     \draw[arrow] (od_download) -- (od_process);
     \draw[arrow] (od_process) -- (od_cleanup);
     
+    \draw[arrow] (people_urls) -- (people_filter);
+    \draw[arrow] (people_filter) -- (people_check);
+    \draw[arrow] (people_check) -- (people_create);
+    \draw[arrow] (people_create) -- (people_insert);
+    
     \draw[arrow] (zonif_urls) -- (zonif_check);
     \draw[arrow] (zonif_check) -- (zonif);
     
     \draw[arrow] (od_cleanup) -- (done);
+    \draw[arrow] (people_insert) -- (done);
     \draw[arrow] (zonif) -- (done);
     \draw[arrow] (ine_relations) -- (done);
     
     \end{tikzpicture}
-    \caption{Bronze MITMA DAG workflow showing parallel task groups for OD, Zonification, and INE Relations processing.}
+    \caption{Bronze MITMA DAG workflow showing parallel task groups for OD, People Day, Zonification, and INE Relations processing.}
     \label{fig:bronze_mitma_dag}
 \end{figure}
 
@@ -621,6 +458,8 @@ The following diagrams illustrate the Airflow DAG structures for Bronze and Silv
     \node[task] (od_check) at (-3.5, 1.5) {od\_check};
     \node[task] (od_process) at (-3.5, 0.5) {od\_process};
     
+    \node[task] (people_create) at (1.5, 3.5) {people\_create};
+    \node[task] (people_insert) at (1.5, 2.5) {people\_insert};
     
     \node[task] (ine_coverage) at (3.5, 3.5) {ine\_coverage};
     \node[task] (ine_all) at (3.5, 2.5) {ine\_all};
@@ -638,6 +477,7 @@ The following diagrams illustrate the Airflow DAG structures for Bronze and Silv
     
     \draw[arrow] (start) -- (mapping);
     \draw[arrow] (start) -- (od_create);
+    \draw[arrow] (start) -- (people_create);
     
     \draw[arrow] (mapping) -- (zonif);
     \draw[arrow] (mapping) -- (ine_coverage);
@@ -649,6 +489,8 @@ The following diagrams illustrate the Airflow DAG structures for Bronze and Silv
     \draw[arrow] (od_batches) -- (od_check);
     \draw[arrow] (od_check) -- (od_process);
     
+    \draw[arrow] (people_create) -- (people_insert);
+    
     \draw[arrow] (od_process) -- (od_quality_create);
     \draw[arrow] (ine_all) -- (od_quality_create);
     
@@ -657,6 +499,7 @@ The following diagrams illustrate the Airflow DAG structures for Bronze and Silv
     
     \draw[arrow] (od_quality_process) -- (done);
     \draw[arrow] (ine_coverage) -- (done);
+    \draw[arrow] (people_insert) -- (done);
     
     \end{tikzpicture}
     \caption{Silver DAG workflow triggered by Bronze layer completion. Shows dependency flow from mapping creation through zone processing, OD transformation, and quality metrics computation.}
@@ -798,6 +641,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Raw origin-destination mobility matrices by municipality, date, and hour from MITMA RSS feeds.
     \item \textbf{Grain:} One row per origin zone, destination zone, date, hour, and demographic segment.
+    \item \textbf{Primary Key:} No formal primary key (all columns as VARCHAR)
     \item \textbf{Sources:} MITMA Estudios Básicos RSS feeds
     \item \textbf{Tracking:} \texttt{source\_file} column contains URL of source CSV file
 \end{itemize}
@@ -807,7 +651,7 @@ conclusiones, limitaciones
     \toprule
     \textbf{Column} & \textbf{Type} & \textbf{Unit} & \textbf{Nullable} & \textbf{Description} \\
     \midrule
-    fecha & TIMESTAMP & -- & No & Date (parsed from YYYYMMDD format in source CSV)\\
+    fecha & VARCHAR & -- & No & Date in YYYYMMDD format\\
     periodo & VARCHAR & -- & Yes & Hour of day (0-23)\\
     origen & VARCHAR & -- & No & Origin zone identifier\\
     destino & VARCHAR & -- & No & Destination zone identifier\\
@@ -820,10 +664,59 @@ conclusiones, limitaciones
     \bottomrule
 \end{longtable}
 
+\subsubsection*{Data Sheet: \texttt{bronze\_mitma\_people\_day\_municipios}}
+\begin{itemize}
+    \item \textbf{Description:} Raw daily population presence data by zone, age group, sex, and travel frequency.
+    \item \textbf{Grain:} One row per stay zone, age group, sex, travel frequency category, and date.
+    \item \textbf{Primary Key:} No formal primary key
+    \item \textbf{Sources:} MITMA Estudios Básicos RSS feeds
+    \item \textbf{Tracking:} \texttt{source\_file} column contains URL of source CSV file
+\end{itemize}
+
+\begin{longtable}{p{3cm} p{2cm} p{1.5cm} p{1.8cm} p{6cm}}
+    \caption{Technical Data Sheet for the bronze\_mitma\_people\_day\_municipios Table} \\
+    \toprule
+    \textbf{Column} & \textbf{Type} & \textbf{Unit} & \textbf{Nullable} & \textbf{Description} \\
+    \midrule
+    fecha & VARCHAR & -- & No & Date in YYYYMMDD format\\
+    zona\_pernoctacion & VARCHAR & -- & No & Zone where individuals stay overnight\\
+    edad & VARCHAR & -- & Yes & Age group category\\
+    sexo & VARCHAR & -- & Yes & Sex category\\
+    numero\_viajes & VARCHAR & -- & Yes & Daily travel frequency category\\
+    personas & VARCHAR & persons & No & Number of individuals (as string)\\
+    source\_file & VARCHAR & -- & No & URL of source CSV file\\
+    loaded\_at & TIMESTAMP & -- & No & Timestamp of ingestion\\
+    \bottomrule
+\end{longtable}
+
+\subsubsection*{Data Sheet: \texttt{bronze\_mitma\_overnight\_stay\_municipios}}
+\begin{itemize}
+    \item \textbf{Description:} Raw overnight stay flows between residence and stay zones.
+    \item \textbf{Grain:} One row per stay zone, residence zone, and date.
+    \item \textbf{Primary Key:} No formal primary key
+    \item \textbf{Sources:} MITMA Estudios Básicos RSS feeds
+    \item \textbf{Tracking:} \texttt{source\_file} column contains URL of source CSV file
+\end{itemize}
+
+\begin{longtable}{p{3cm} p{2cm} p{1.5cm} p{1.8cm} p{6cm}}
+    \caption{Technical Data Sheet for the bronze\_mitma\_overnight\_stay\_municipios Table} \\
+    \toprule
+    \textbf{Column} & \textbf{Type} & \textbf{Unit} & \textbf{Nullable} & \textbf{Description} \\
+    \midrule
+    fecha & VARCHAR & -- & No & Date in YYYYMMDD format\\
+    zona\_pernoctacion & VARCHAR & -- & No & Zone where overnight stay occurs\\
+    zona\_residencia & VARCHAR & -- & No & Residence zone of individuals\\
+    personas & VARCHAR & persons & No & Number of individuals (as string)\\
+    source\_file & VARCHAR & -- & No & URL of source CSV file\\
+    loaded\_at & TIMESTAMP & -- & No & Timestamp of ingestion\\
+    \bottomrule
+\end{longtable}
+
 \subsubsection*{Data Sheet: \texttt{bronze\_mitma\_municipios}}
 \begin{itemize}
     \item \textbf{Description:} Raw zoning reference data including geometric boundaries for municipalities.
     \item \textbf{Grain:} One row per spatial zone.
+    \item \textbf{Primary Key:} ID (implicit)
     \item \textbf{Sources:} MITMA zoning shapefile exports
     \item \textbf{Tracking:} Single ingestion, no source\_file column
 \end{itemize}
@@ -844,6 +737,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Catalog of Spanish municipalities with INE codes and names from INE API.
     \item \textbf{Grain:} One row per municipality.
+    \item \textbf{Primary Key:} Codigo (INE code)
     \item \textbf{Sources:} INE API (JSON format)
     \item \textbf{Tracking:} \texttt{source\_url} column contains API endpoint URL
 \end{itemize}
@@ -865,6 +759,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Number of registered companies per municipality and year from INE API.
     \item \textbf{Grain:} One row per municipality and year (nested JSON structure).
+    \item \textbf{Primary Key:} No formal primary key
     \item \textbf{Sources:} INE API (JSON format with nested Data array)
     \item \textbf{Tracking:} \texttt{source\_url} column contains API endpoint URL with year parameter
 \end{itemize}
@@ -886,6 +781,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Population counts by municipality, sex, and year from INE API.
     \item \textbf{Grain:} One row per municipality and year (nested JSON structure).
+    \item \textbf{Primary Key:} No formal primary key
     \item \textbf{Sources:} INE API (JSON format with nested Data array)
     \item \textbf{Tracking:} \texttt{source\_url} column contains API endpoint URL with year parameter
 \end{itemize}
@@ -907,6 +803,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Average income per capita by municipality and year from INE API.
     \item \textbf{Grain:} One row per municipality and year (nested JSON structure).
+    \item \textbf{Primary Key:} No formal primary key
     \item \textbf{Sources:} INE API (JSON format with nested Data array)
     \item \textbf{Tracking:} \texttt{source\_url} column contains API endpoint URL with year parameter
 \end{itemize}
@@ -928,6 +825,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Mapping table connecting MITMA zone identifiers to INE municipality codes.
     \item \textbf{Grain:} One row per MITMA-INE relationship.
+    \item \textbf{Primary Key:} municipio\_mitma, municipio\_ine (implicit)
     \item \textbf{Sources:} MITMA CSV file from movilidad-opendata.mitma.es
     \item \textbf{Tracking:} \texttt{source\_file} column contains source CSV URL
 \end{itemize}
@@ -948,6 +846,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} National holidays for Spain generated programmatically using Python's holidays library.
     \item \textbf{Grain:} One row per holiday date.
+    \item \textbf{Primary Key:} date (implicit)
     \item \textbf{Sources:} Python holidays library (no external file)
     \item \textbf{Tracking:} No source tracking (programmatically generated)
 \end{itemize}
@@ -969,6 +868,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Mapping table establishing relationships between MITMA zone identifiers and INE municipality codes, with normalized names for fuzzy matching.
     \item \textbf{Grain:} One row per valid MITMA-INE relationship.
+    \item \textbf{Primary Key:} codigo\_ine, municipio\_mitma
     \item \textbf{Sources:} \texttt{bronze\_ine\_municipios}, \texttt{bronze\_mitma\_ine\_relations}
 \end{itemize}
 
@@ -987,6 +887,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Socioeconomic and demographic indicators derived from INE data, harmonized at the zone level.
     \item \textbf{Grain:} One row per zone and year.
+    \item \textbf{Primary Key:} id, year
     \item \textbf{Sources:} INE (Instituto Nacional de Estadística)
 \end{itemize}
 
@@ -1010,6 +911,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Reference table defining spatial zones and their geometric properties.
     \item \textbf{Grain:} One row per spatial zone.
+    \item \textbf{Primary Key:} id
     \item \textbf{Sources:} MITMA zoning files, INE spatial references
 \end{itemize}
 
@@ -1029,6 +931,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Cleaned origin--destination mobility flows between spatial zones with temporal enrichment flags.
     \item \textbf{Grain:} One row per origin zone, destination zone, date, hour, and residence classification.
+    \item \textbf{Primary Key:} origen\_zone\_id, destino\_zone\_id, fecha, residencia
     \item \textbf{Sources:} \texttt{bronze\_mitma\_od\_municipios}, \texttt{bronze\_spanish\_holidays}
     \item \textbf{Partitioning:} Partitioned by \texttt{year(fecha), month(fecha), day(fecha)}
 \end{itemize}
@@ -1049,10 +952,53 @@ conclusiones, limitaciones
     \bottomrule
 \end{longtable}
 
+\subsubsection*{Data Sheet: \texttt{silver\_overnight\_stay}}
+\begin{itemize}
+    \item \textbf{Description:} Overnight stay flows between residence and stay zones.
+    \item \textbf{Grain:} One row per stay zone, residence zone, and date.
+    \item \textbf{Primary Key:} zona\_pernoctacion, zona\_residencia, fecha
+    \item \textbf{Sources:} MITMA Estudios Básicos
+\end{itemize}
+
+\begin{longtable}{p{3cm} p{2cm} p{1.5cm} p{1.8cm} p{6cm}}
+    \caption{Technical Data Sheet for the silver\_overnight\_stay Table} \\
+    \toprule
+    \textbf{Column} & \textbf{Type} & \textbf{Unit} & \textbf{Nullable} & \textbf{Description}\\
+    \midrule
+    zona\_pernoctacion & VARCHAR & -- & No & Zone where overnight stay occurs\\
+    zona\_residencia & VARCHAR & -- & No & Residence zone of individuals\\
+    fecha & DATETIME & -- & No & Observation date\\
+    personas & DOUBLE & persons & No & Number of individuals staying overnight\\
+    \bottomrule
+\end{longtable}
+
+\subsubsection*{Data Sheet: \texttt{silver\_people\_day}}
+\begin{itemize}
+    \item \textbf{Description:} Daily population presence by demographic attributes and stay location.
+    \item \textbf{Grain:} One row per stay zone, age group, sex, travel frequency category, and date.
+    \item \textbf{Primary Key:} zona\_pernoctacion, edad, sexo, numero\_viajes, fecha
+    \item \textbf{Sources:} MITMA
+\end{itemize}
+
+\begin{longtable}{p{3cm} p{2cm} p{1.5cm} p{1.8cm} p{6cm}}
+    \caption{Technical Data Sheet for the silver\_people\_day Table} \\
+    \toprule
+    \textbf{Column} & \textbf{Type} & \textbf{Unit} & \textbf{Nullable} & \textbf{Description}\\
+    \midrule
+    zona\_pernoctacion & VARCHAR & -- & No & Zone where individuals stay overnight\\
+    edad & VARCHAR & -- & No & Age group category\\
+    sexo & VARCHAR & -- & No & Sex category\\
+    numero\_viajes & VARCHAR & -- & No & Daily travel frequency category\\
+    personas & DOUBLE & persons & No & Number of individuals present\\
+    fecha & DATETIME & -- & No & Observation date\\
+    \bottomrule
+\end{longtable}
+
 \subsubsection*{Data Sheet: \texttt{silver\_mitma\_distances}}
 \begin{itemize}
     \item \textbf{Description:} Precomputed distances between origin and destination zones.
     \item \textbf{Grain:} One row per origin--destination zone pair.
+    \item \textbf{Primary Key:} origin, destination
     \item \textbf{Sources:} Derived from spatial centroids in \texttt{silver\_zones}
 \end{itemize}
 
@@ -1072,6 +1018,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Quality and diagnostic metrics computed for the \texttt{silver\_mitma\_od} table.
     \item \textbf{Grain:} One row per origin zone, destination zone, and date.
+    \item \textbf{Primary Key:} origen\_zone\_id, destino\_zone\_id, fecha
     \item \textbf{Sources:} Derived from \texttt{silver\_mitma\_od} and population data
 \end{itemize}
 
@@ -1098,6 +1045,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Average hourly mobility profile. Aggregates silver layer flows to obtain an analytical ``typical day'', allowing observation of peak and off-peak patterns.
     \item \textbf{Grain:} One row per origin zone, destination zone, date, and hour.
+    \item \textbf{Primary Key:} origin\_id, destination\_id, date, hour
     \item \textbf{Sources:} \texttt{silver\_od}
 \end{itemize}
 
@@ -1119,6 +1067,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Comparison between observed actual mobility and theoretical mobility predicted by a Gravity Model based on mass (population and companies) and distance.
     \item \textbf{Grain:} One row per origin zone, destination zone, and date.
+    \item \textbf{Primary Key:} origin\_id, destination\_id, date
     \item \textbf{Sources:} \texttt{silver\_mitma\_od}, \texttt{silver\_ine\_all}, \texttt{silver\_mitma\_distances}
 \end{itemize}
 
@@ -1140,6 +1089,7 @@ conclusiones, limitaciones
 \begin{itemize}
     \item \textbf{Description:} Classification of zones based on their predominant mobility behavior, calculated using K-Means clustering on inbound and outbound flows.
     \item \textbf{Grain:} One row per spatial zone.
+    \item \textbf{Primary Key:} zone\_id
     \item \textbf{Sources:} \texttt{silver\_mitma\_od}, \texttt{silver\_zones}, Scikit-learn Clustering
 \end{itemize}
 

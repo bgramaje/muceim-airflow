@@ -5,23 +5,21 @@ Contains helper functions for DuckDB operations and connection management.
 
 import duckdb
 from contextlib import contextmanager
-from utils.logger import get_logger
 
 
 def load_extension(con: duckdb.DuckDBPyConnection, extension: str):
     """Loads a DuckDB extension with fallback if already installed."""
-    logger = get_logger(__name__)
     try:
         con.execute(f"INSTALL {extension};")
         con.execute(f"LOAD {extension};")
-        logger.info(f"Extension {extension} loaded")
+        print(f"Extension {extension} loaded")
     except Exception as e:
-        logger.warning(f"Warning loading {extension}: {e}")
+        print(f"Warning loading {extension}: {e}")
         try:
             con.execute(f"LOAD {extension};")
-            logger.info(f"Extension {extension} loaded (already installed)")
+            print(f"Extension {extension} loaded (already installed)")
         except:
-            logger.error(f"Failed to load {extension}")
+            print(f"Failed to load {extension}")
             raise
 
 
@@ -100,11 +98,9 @@ class DuckLakeConnectionManager:
         """
         import os
 
-        logger = get_logger(__name__)
-        
         try:
             from airflow.sdk import Connection, Variable  # type: ignore
-            logger.info("🔗 Usando conexiones de Airflow...")
+            print("🔗 Usando conexiones de Airflow...")
 
             pg_conn = Connection.get('postgres_datos_externos')
             POSTGRES_HOST = pg_conn.host
@@ -125,7 +121,7 @@ class DuckLakeConnectionManager:
             RUSTFS_BUCKET = Variable.get('RUSTFS_BUCKET', default='mitma')
 
         except (ImportError, Exception):
-            logger.info("🔗 Usando variables de entorno (Cloud Run)...")
+            print("🔗 Usando variables de entorno (Cloud Run)...")
 
             POSTGRES_HOST = os.environ.get("POSTGRES_HOST")
             POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
@@ -147,7 +143,8 @@ class DuckLakeConnectionManager:
         USER_AGENT_STR = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         duckdb_config['custom_user_agent'] = USER_AGENT_STR
 
-        logger.debug(f"DuckDB Config: RAM={duckdb_config['memory_limit']}, UA=Windows/Chrome")
+        print(
+            f"DuckDB Config: RAM={duckdb_config['memory_limit']}, UA=Windows/Chrome")
 
         con = duckdb.connect(config=duckdb_config)
 
@@ -190,13 +187,13 @@ class DuckLakeConnectionManager:
         try:
             load_extension(con, 'ducklake')  # Use stable, not core_nightly
         except Exception as e:
-            logger.warning(f"DuckLake nightly failed: {e}, trying standard...") 
+            print(f"DuckLake nightly failed: {e}, trying standard...") 
             try:
                 con.execute("FORCE INSTALL ducklake FROM stable;")
                 con.execute("LOAD ducklake;")
-                logger.info("DuckLake standard loaded")
+                print("DuckLake standard loaded")
             except Exception as e:
-                logger.error(f"DuckLake standard failed: {e}")
+                print(f"DuckLake standard failed: {e}")
                 raise
 
         databases = con.execute(
@@ -213,22 +210,22 @@ class DuckLakeConnectionManager:
         
         # Attach DuckLake for main operations
         if 'ducklake' not in database_names:
-            logger.info("🔌 Attaching DuckLake...")
+            print("🔌 Attaching DuckLake...")
             attach_query = f"""
                 ATTACH 'ducklake:postgres:{postgres_connection_string}' 
                 AS ducklake (DATA_PATH 's3://{RUSTFS_BUCKET}/');
             """
             con.execute(attach_query)
-            logger.info("✅ DuckLake attached")
+            print("✅ DuckLake attached")
 
         con.execute("USE ducklake;")
         
         # Verify DuckLake connection works (this also validates PostgreSQL connectivity)
         try:
             con.execute("SELECT 1")
-            logger.info("✅ DuckLake connection verified")
+            print("✅ DuckLake connection verified")
         except Exception as e:
-            logger.error(f"⚠️ DuckLake connection verification failed: {e}", exc_info=True)
+            print(f"⚠️ DuckLake connection verification failed: {e}")
             raise
 
         return con

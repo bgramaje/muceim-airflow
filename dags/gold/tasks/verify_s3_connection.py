@@ -9,7 +9,6 @@ from airflow.sdk import task  # type: ignore
 from airflow.sdk import Variable
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from datetime import datetime
-from utils.logger import get_logger
 
 
 @task
@@ -24,8 +23,7 @@ def GOLD_verify_s3_connection(**context):
     Returns:
     - Dict with verification results
     """
-    logger = get_logger(__name__, context)
-    logger.info("Verifying S3 connection")
+    print("[TASK] Verifying S3 connection")
     
     try:
         # Get bucket name from Airflow Variables
@@ -35,13 +33,13 @@ def GOLD_verify_s3_connection(**context):
         s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
         
         # Test 1: Verify bucket access
-        logger.info(f"Verifying access to bucket '{bucket_name}'...")
+        print(f"[TEST] Verifying access to bucket '{bucket_name}'...")
         if not s3_hook.check_for_bucket(bucket_name):
             raise Exception(f"Bucket '{bucket_name}' does not exist or is not accessible")
-        logger.info(f"Bucket '{bucket_name}' is accessible")
+        print(f"[SUCCESS] Bucket '{bucket_name}' is accessible")
         
         # Test 2: Upload a simple verification file
-        logger.info("Testing file upload...")
+        print("[TEST] Testing file upload...")
         test_key = f"gold/_verification/test_connection_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         test_content = f"S3 connection verification - {datetime.now().isoformat()}"
         
@@ -51,7 +49,7 @@ def GOLD_verify_s3_connection(**context):
             bucket_name=bucket_name,
             replace=True
         )
-        logger.info(f"Verification file uploaded to s3://{bucket_name}/{test_key}")
+        print(f"[SUCCESS] Verification file uploaded to s3://{bucket_name}/{test_key}")
         
         result = {
             'status': 'success',
@@ -60,10 +58,10 @@ def GOLD_verify_s3_connection(**context):
             'verification_file': test_key
         }
         
-        logger.info("S3 verification completed successfully")
+        print("[TASK] S3 verification completed successfully")
         return result
         
     except Exception as e:
         error_msg = f"S3 connection verification failed: {str(e)}"
-        logger.error(error_msg, exc_info=True)
+        print(f"[ERROR] {error_msg}")
         raise Exception(error_msg) from e

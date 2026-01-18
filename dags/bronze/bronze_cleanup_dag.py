@@ -22,7 +22,6 @@ from airflow.sdk import Variable
 from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
 from click.core import F
-from utils.logger import get_logger
 
 SOURCE_TABLE_PATTERNS = {
     'mitma': {
@@ -78,8 +77,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     if source_config.get('has_zone_types', False) and zone_type != 'all':
         table_names = [t for t in table_names if t.endswith(f'_{zone_type}')]
     
-    logger = get_logger(__name__, context)
-    logger.info(f"Found {len(table_names)} matching tables: {table_names}")
+    print(f"Found {len(table_names)} matching tables: {table_names}")
     
     if not table_names:
         return {
@@ -135,11 +133,10 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
             files_by_table[table_name] = len(table_files)
             
         except Exception as e:
-            logger.warning(f"Error listing files for table '{table_name}': {e}")
+            print(f"Error listing files for table '{table_name}': {e}")
             files_by_table[table_name] = 0
     
-    total_size_mb = round(total_size / (1024 * 1024), 2)
-    logger.info(f"Found {len(all_files)} files ({total_size_mb} MB) in {len(table_names)} tables")
+    print(f"Found {len(all_files)} files ({round(total_size / (1024 * 1024), 2)} MB) in {len(table_names)} tables")
     
     summary = {}
     for f in all_files:
@@ -180,9 +177,7 @@ def delete_rustfs_files(
     total_size_mb = file_info.get('total_size_mb', 0)
     source = file_info.get('source', 'unknown')
     
-    logger = get_logger(__name__, context)
     if not files:
-        logger.info("No files to delete, skipping")
         return {
             'status': 'skipped',
             'reason': 'no_files',
@@ -190,7 +185,7 @@ def delete_rustfs_files(
             'source': source
         }
     
-    logger.info(f"Deleting {total_count} files ({total_size_mb} MB) for source '{source}'")
+    print(f"Deleting {total_count} files ({total_size_mb} MB) for source '{source}'")
     
     s3_paths = [f"s3://{rustfs_bucket}/{f['key']}" for f in files]
     
@@ -203,7 +198,7 @@ def delete_rustfs_files(
         if not success
     ]
     
-    logger.info(f"Deleted {deleted}/{total_count} files")
+    print(f"Deleted {deleted}/{total_count} files")
     
     return {
         'status': 'success' if not errors else 'partial',
@@ -245,7 +240,7 @@ def list_bronze_tables(**context) -> Dict[str, Any]:
     if source_config.get('has_zone_types', False) and zone_type != 'all':
         table_names = [t for t in table_names if t.endswith(f'_{zone_type}')]
     
-    logger.info(f"Found {len(table_names)} matching tables: {table_names}")
+    print(f"Found {len(table_names)} matching tables: {table_names}")
     
     return {
         'tables': table_names,
@@ -276,19 +271,18 @@ def drop_bronze_tables(
             'source': source
         }
     
-    logger = get_logger(__name__, context)
     table_names = tables if isinstance(tables, list) else []
     drop_statements = [f"DROP TABLE IF EXISTS {table_name};" for table_name in table_names]
     sql_query = "\n".join(drop_statements)
     
-    logger.warning(f"⚠️  DROPPING {len(table_names)} {source} tables (complete deletion)")
+    print(f"Dropping {len(table_names)} {source} tables (complete deletion)")
     for t in table_names:
-        logger.warning(f"  - {t}")
+        print(f" - {t}")
     
     try:
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         
-        logger.info(f"✅ Dropped {len(table_names)} tables")
+        print(f"Dropped {len(table_names)} tables")
         
         return {
             'status': 'success',
@@ -300,7 +294,7 @@ def drop_bronze_tables(
         }
         
     except Exception as e:
-        logger.error(f"❌ Error dropping tables: {e}", exc_info=True)
+        print(f"Error dropping tables: {e}")
         return {
             'status': 'error',
             'dropped': 0,

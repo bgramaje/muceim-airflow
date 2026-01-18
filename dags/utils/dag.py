@@ -4,7 +4,6 @@ Common DAG utilities and helper functions.
 
 from datetime import datetime
 from airflow.sdk import task  # type: ignore
-from utils.logger import get_logger
 
 
 @task
@@ -20,9 +19,7 @@ def validate_dates(start_date: str = None, end_date: str = None, **context):
     - AirflowException: If dates are invalid or end_date <= start_date
     """
     from airflow.exceptions import AirflowException
-    logger = get_logger(__name__, context)
-    
-    logger.info(f"Received start_date: {start_date}, end_date: {end_date}")
+    print(f"Received start_date: {start_date}, end_date: {end_date}")
 
     try:
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
@@ -33,5 +30,5 @@ def validate_dates(start_date: str = None, end_date: str = None, **context):
     if end_dt <= start_dt:
         raise AirflowException(f"End date '{end_date}' must be greater than start date '{start_date}'")
     
-    logger.info(f"Date range validated: {start_date} to {end_date}")
+    print(f"[VALIDATION] Date range validated: {start_date} to {end_date}")
     return True

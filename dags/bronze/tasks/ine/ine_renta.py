@@ -5,7 +5,6 @@ Uses dynamic task mapping to process each URL in parallel.
 """
 
 from airflow.sdk import task
-from utils.logger import get_logger
 
 
 @task
@@ -44,8 +43,7 @@ def BRONZE_ine_renta_create_table(urls: list[str], **context):
     if not urls or len(urls) == 0:
         raise ValueError(f"No URLs provided to create table {table_name}")
 
-    logger = get_logger(__name__, context)
-    logger.info(f"Creating table {table_name} if not exists")
+    print(f"creating table {table_name} if not exists")
 
     # SQL to create table from JSON URL with year column as INTEGER
     sql_query = f"""

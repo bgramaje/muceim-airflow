@@ -1,7 +1,6 @@
 from airflow.sdk import task
 
 from utils.gcp import execute_sql_or_cloud_run
-from utils.logger import get_logger
 
 
 @task
@@ -12,8 +11,7 @@ def SILVER_mitma_distances(**context):
     The distances are calculated between zones of the same type.
     Executes using Cloud Run Job (ducklake-executor).
     """
-    logger = get_logger(__name__, context)
-    logger.info("Building silver_mitma_distances table using Cloud Run")
+    print("[TASK] Building silver_mitma_distances table using Cloud Run")
 
     sql_query = """
         INSTALL spatial;
@@ -30,8 +28,8 @@ def SILVER_mitma_distances(**context):
 
     result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
     
-    logger.info("silver_mitma_distances table built successfully")
-    logger.info(f"Execution time: {result.get('execution_time_seconds', 0)} seconds")
+    print(f"[TASK] silver_mitma_distances table built successfully")
+    print(f"[TASK] Execution time: {result.get('execution_time_seconds', 0)} seconds")
 
     return {
         "status": "success",

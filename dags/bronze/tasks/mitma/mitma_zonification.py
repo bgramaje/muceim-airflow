@@ -5,7 +5,6 @@ for distritos, municipios, and GAU zone types.
 """
 
 from airflow.sdk import task
-from utils.logger import get_logger
 
 
 @task
@@ -16,9 +15,8 @@ def BRONZE_mitma_zonification_urls(zone_type: str = 'distritos'):
     """
     from bronze.utils import get_mitma_zoning_urls
 
-    logger = get_logger(__name__)
     urls = get_mitma_zoning_urls(zone_type)
-    logger.info(f"Generated URLs for zonification {zone_type}: {len(urls.get('shp_components', []))} shapefile components")
+    print(f"[TASK] Generated URLs for zonification {zone_type}: {len(urls.get('shp_components', []))} shapefile components")
     return urls
 
 
@@ -42,8 +40,7 @@ def BRONZE_mitma_zonification(zone_type: str = 'distritos'):
     from bronze.utils import load_zonificacion
     from utils.utils import get_ducklake_connection
 
-    logger = get_logger(__name__)
-    logger.info(f"Starting zonification load for {zone_type}")
+    print(f"[TASK] Starting zonification load for {zone_type}")
     
     # Get connection (singleton - will be reused)
     con = get_ducklake_connection()
@@ -66,7 +63,7 @@ def BRONZE_mitma_zonification(zone_type: str = 'distritos'):
             
             if record_count > 0:
                 msg = f"Table {table_name} already exists with {record_count:,} records. Skipping zonification load."
-                logger.info(msg)
+                print(f"[TASK] {msg}")
                 return {
                     'status': 'skipped',
                     'message': msg,
@@ -76,11 +73,11 @@ def BRONZE_mitma_zonification(zone_type: str = 'distritos'):
                     'table_name': table_name
                 }
             else:
-                logger.info(f"Table {table_name} exists but is empty. Proceeding with load...")
+                print(f"[TASK] Table {table_name} exists but is empty. Proceeding with load...")
         else:
-            logger.info(f"Table {table_name} does not exist. Proceeding with load...")
+            print(f"[TASK] Table {table_name} does not exist. Proceeding with load...")
     except Exception as e:
-        logger.warning(f"Could not check table status: {e}. Proceeding with load...")
+        print(f"[TASK] Warning: Could not check table status: {e}. Proceeding with load...")
     
     # Load zonification data using utility function
     load_zonificacion(con, zone_type)
@@ -90,10 +87,9 @@ def BRONZE_mitma_zonification(zone_type: str = 'distritos'):
     record_count = int(count['count'].iloc[0])
     
     msg = f"Successfully loaded zonification data for {zone_type}: {record_count:,} records"
-    logger.info(msg)
-    logger.debug(f"Sample data from {table_name}:")
-    sample_df = con.execute(f"SELECT * FROM {table_name} LIMIT 10").fetchdf()
-    logger.debug(f"{sample_df}")
+    print(f"[TASK] {msg}")
+    print(f"[TASK] Sample data from {table_name}:")
+    print(con.execute(f"SELECT * FROM {table_name} LIMIT 10").fetchdf())
     
     return {
         'status': 'success',

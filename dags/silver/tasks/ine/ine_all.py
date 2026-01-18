@@ -2,7 +2,6 @@ from airflow.sdk import task  # type: ignore
 
 from utils.gcp import execute_sql_or_cloud_run
 from utils.utils import get_ducklake_connection
-from utils.logger import get_logger
 
 
 @task
@@ -13,10 +12,9 @@ def SILVER_ine_all(**context):
     """
     con = get_ducklake_connection()
 
-    logger = get_logger(__name__, context)
     year = context['params'].get('start', '')[
         :4] if context['params'].get('start') else ''
-    logger.info(f"Using year: {year}")
+    print(f"Using year: {year}")
 
     query = f"""
         CREATE OR REPLACE TABLE silver_ine_all AS
@@ -48,12 +46,11 @@ def SILVER_ine_all(**context):
 
 
 @task
-def CLEANUP_intermediate_ine_tables(**context):
+def CLEANUP_intermediate_ine_tables():
     """
     Airflow task to drop intermediate INE tables.
     """
-    logger = get_logger(__name__, context)
-    logger.info("Dropping intermediate INE tables")
+    print("[TASK] Dropping intermediate INE tables")
 
     con = get_ducklake_connection()
 
@@ -64,7 +61,7 @@ def CLEANUP_intermediate_ine_tables(**context):
     ]
 
     for table in tables_to_drop:
-        logger.info(f"Dropping table {table}")
+        print(f"[TASK] Dropping table {table}")
         con.execute(f"DROP TABLE IF EXISTS {table}")
 
     return {

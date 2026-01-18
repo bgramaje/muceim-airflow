@@ -4,7 +4,6 @@ Uses Cloud Run executor to run SQL directly against INE API URLs.
 """
 
 from airflow.sdk import task
-from utils.logger import get_logger
 
 
 @task
@@ -30,8 +29,7 @@ def BRONZE_ine_municipios_create_table(urls: list[str], **context):
     if not urls or len(urls) == 0:
         raise ValueError(f"No URLs provided to create table {table_name}")
 
-    logger = get_logger(__name__, context)
-    logger.info(f"Creating table {table_name} if not exists")
+    print(f"Creating table {table_name} if not exists")
 
     sql_query = f"""
         CREATE TABLE IF NOT EXISTS {table_name} AS
@@ -68,8 +66,7 @@ def BRONZE_ine_municipios_insert(url: str, **context):
     """
     from utils.gcp import execute_sql_or_cloud_run
 
-    logger = get_logger(__name__, context)
-    logger.info(f"Processing URL: {url}")
+    print(f"[TASK] Processing URL: {url}")
 
     table_name = 'bronze_ine_municipios'
 
