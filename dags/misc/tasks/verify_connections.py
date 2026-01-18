@@ -13,7 +13,7 @@ def PRE_verify_connections():
     Returns:
     - Dict with connection status
     """
-    print("[TASK] Verifying connections...")
+    print("Verifying connections...")
     
     results = {
         'postgres': False,
@@ -24,7 +24,7 @@ def PRE_verify_connections():
     try:
         from airflow.providers.postgres.hooks.postgres import PostgresHook
         
-        print("[TASK] Testing PostgreSQL connection...")
+        print("Testing PostgreSQL connection...")
         pg_hook = PostgresHook(postgres_conn_id='postgres_datos_externos')
         
         connection = pg_hook.get_conn()
@@ -34,37 +34,37 @@ def PRE_verify_connections():
         cursor.close()
         connection.close()
         
-        print(f"[TASK] PostgreSQL OK: {version[0][:50]}...")
+        print(f"PostgreSQL OK: {version[0][:50]}...")
         results['postgres'] = True
         
     except Exception as e:
         error_msg = f"PostgreSQL connection failed: {str(e)}"
-        print(f"[TASK] {error_msg}")
+        print(error_msg)
         results['errors'].append(error_msg)
     
     try:
         from airflow.providers.amazon.aws.hooks.s3 import S3Hook
         
-        print("[TASK] Testing RustFS connection...")
+        print("Testing RustFS connection...")
         s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
         
         s3_client = s3_hook.get_conn()
         response = s3_client.list_buckets()
         buckets = [bucket['Name'] for bucket in response.get('Buckets', [])]
         
-        print(f"[TASK] RustFS OK. Buckets: {buckets}")
+        print(f"RustFS OK. Buckets: {buckets}")
         results['rustfs'] = True
         
     except Exception as e:
         error_msg = f"RustFS connection failed: {str(e)}"
-        print(f"[TASK] {error_msg}")
+        print(error_msg)
         results['errors'].append(error_msg)
     
     if results['postgres'] and results['rustfs']:
-        print("[TASK] All connections verified successfully")
+        print("All connections verified successfully")
         results['status'] = 'success'
     else:
-        print("[TASK] Some connections failed")
+        print("[Some connections failed")
         results['status'] = 'failed'
         raise Exception(f"Connection verification failed: {results['errors']}")
     

@@ -306,14 +306,14 @@ def drop_gold_tables(
     drop_statements = [f"DROP TABLE IF EXISTS {table_name};" for table_name in table_names]
     sql_query = "\n".join(drop_statements)
     
-    print(f"[CLEANUP] ⚠️  DROPPING {len(table_names)} {table_type} tables (complete deletion)")
+    print(f"DROPPING {len(table_names)} {table_type} tables (complete deletion)")
     for t in table_names:
-        print(f"[CLEANUP]   - {t}")
+        print(f"- {t}")
     
     try:
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         
-        print(f"[CLEANUP] ✅ Dropped {len(table_names)} tables")
+        print(f"Dropped {len(table_names)} tables")
         
         return {
             'status': 'success',
@@ -325,7 +325,7 @@ def drop_gold_tables(
         }
         
     except Exception as e:
-        print(f"[CLEANUP] ❌ Error dropping tables: {e}")
+        print(f"Error dropping tables: {e}")
         return {
             'status': 'error',
             'dropped': 0,
