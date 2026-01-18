@@ -433,20 +433,14 @@ Airflow 2.3+ permite expandir dinámicamente tareas basándose en una lista de i
 \begin{lstlisting}[language=Python, caption={Dynamic Task Mapping para procesar URLs en paralelo}]
 # En el DAG bronze_mitma:
 
-# 1. Obtener URLs del RSS
+# 1. Obtener URLs a procesar (solo las fechas faltantes) en una única task
 od_urls = BRONZE_mitma_od_urls(
     zone_type="municipios",
     start_date="{{ params.start }}",
     end_date="{{ params.end }}",
 )
 
-# 2. Filtrar URLs ya procesadas
-od_filtered_urls = BRONZE_mitma_od_filter_urls(
-    urls=od_urls,
-    zone_type="municipios",
-)
-
-# 3. Procesar cada URL en paralelo (Dynamic Task Mapping)
+# 2. Procesar cada URL en paralelo (Dynamic Task Mapping)
 od_process = (
     BRONZE_mitma_od_process
     .override(
@@ -454,7 +448,7 @@ od_process = (
         pool="default_pool",  # Control de concurrencia
     )
     .partial(zone_type="municipios")
-    .expand(url=od_filtered_urls)  # Expande a N tareas
+    .expand(url=od_urls)  # Expande a N tareas
 )
 \end{lstlisting}
 

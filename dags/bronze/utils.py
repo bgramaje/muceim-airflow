@@ -3,7 +3,6 @@
 from utils.utils import get_ducklake_connection
 import re
 import urllib.request
-import urllib.error
 import urllib.parse
 import requests
 import pandas as pd
@@ -12,143 +11,98 @@ import os
 import io
 import tempfile
 import time
-from datetime import datetime
 from shapely.validation import make_valid
-from functools import wraps
-from typing import List, Dict, Callable, Optional, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import sys
-
-# Ensure we can import from parent directory
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-LAKE_LAYER = 'bronze'
-RUSTFS_RAW_BUCKET = 'mitma-raw'  # S3 bucket names cannot contain underscores, use hyphen instead
- 
-MAX_RETRIES = 5
-INITIAL_BACKOFF = 2
-MAX_BACKOFF = 120
-CHUNK_SIZE = 8 * 1024 * 1024
-DOWNLOAD_TIMEOUT = 600
-def retry_with_backoff(
-    max_retries: int = MAX_RETRIES,
-    initial_backoff: float = INITIAL_BACKOFF,
-    max_backoff: float = MAX_BACKOFF,
-    retryable_exceptions: tuple = (
-        urllib.error.URLError,
-        TimeoutError,
-        ConnectionError,
-        ConnectionResetError,
-        BrokenPipeError,
-        OSError,
-    )
-):
-    """Decorator for retry with exponential backoff on transient errors."""
-    def decorator(func: Callable):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(max_retries):
-                try:
-                    return func(*args, **kwargs)
-                except retryable_exceptions as e:
-                    last_exception = e
-                    if attempt < max_retries - 1:
-                        backoff = min(initial_backoff * (2 ** attempt), max_backoff)
-                        import random
-                        jitter = random.uniform(0, backoff * 0.1)
-                        wait_time = backoff + jitter
-                        print(f"[RETRY] Attempt {attempt + 1}/{max_retries} failed: {e}. "
-                              f"Retrying in {wait_time:.1f}s...")
-                        time.sleep(wait_time)
-                    else:
-                        print(f"[RETRY] All {max_retries} attempts failed for {func.__name__}")
-            raise last_exception
-        return wrapper
-    return decorator
+from typing import List, Dict, Any
 
 
-@retry_with_backoff()
-def download_url_to_file(url: str, file_path: str, timeout: int = DOWNLOAD_TIMEOUT) -> int:
+def download_url_to_file(url: str, file_path: str, timeout: int = 2000) -> int:
     """Downloads a file using streaming to disk with automatic retry."""
-    req = urllib.request.Request(url, headers={"User-Agent": "MITMA-DuckLake-Loader"})
-    
+ 
+    chunk_size = 8 * 1024 * 1024
+
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "MITMA-DuckLake-Loader"})
+
     total_size = 0
     last_progress_log = 0
-    
+
     with urllib.request.urlopen(req, timeout=timeout) as response:
         content_length = response.headers.get('Content-Length')
         expected_size = int(content_length) if content_length else None
-        
+
         with open(file_path, 'wb') as f:
             while True:
-                chunk = response.read(CHUNK_SIZE)
+                chunk = response.read(chunk_size)
                 if not chunk:
                     break
                 f.write(chunk)
                 total_size += len(chunk)
-                
+
                 if expected_size and total_size - last_progress_log >= 10 * 1024 * 1024:
                     progress = (total_size / expected_size) * 100
-                    print(f"[DOWNLOAD] Progress: {progress:.1f}% ({total_size:,} / {expected_size:,} bytes)")
+                    print(
+                        f"Progress: {progress:.1f}% ({total_size:,} / {expected_size:,} bytes)")
                     last_progress_log = total_size
-    
-    print(f"[DOWNLOAD] Complete: {total_size:,} bytes")
+
+    print(f"Complete: {total_size:,} bytes")
     return total_size
 
 
-def download_url_to_rustfs_v2(url: str, dataset: str, zone_type: str) -> str:
-    """Downloads a file to RustFS S3 using streaming (memory efficient)."""
+def download_url_to_rustfs(url: str, dataset: str, zone_type: str, bucket: str) -> str:
+    """Downloads a file to RustFS S3 using streaming (memory efficient).
+
+    Args:
+        url: URL to download from
+        dataset: Dataset name (e.g., 'od')
+        zone_type: Zone type (e.g., 'municipios', 'distritos', 'gau')
+        bucket: S3 bucket name (from Airflow Variable)
+
+    Returns:
+        S3 path of the uploaded file
+    """
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-    
+
     parsed_url = urllib.parse.urlparse(url)
     filename = os.path.basename(parsed_url.path)
-    
+
     if not filename:
-        raise ValueError(f"Could not extract filename from URL: {url}")
-    
+        raise ValueError(f"could not extract filename from URL: {url}")
+
     s3_key = f"{dataset}/{zone_type}/{filename}"
-    s3_path = f"s3://{RUSTFS_RAW_BUCKET}/{s3_key}"
-    
-    print(f"[DOWNLOAD_V2] Target S3 path: {s3_path}")
-    
+    s3_path = f"s3://{bucket}/{s3_key}"
+
+    print(f"target S3 path: {s3_path}")
+
     s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
-    
-    # Ensure bucket exists
-    try:
-        if not s3_hook.check_for_bucket(RUSTFS_RAW_BUCKET):
-            s3_hook.create_bucket(bucket_name=RUSTFS_RAW_BUCKET)
-            print(f"[DOWNLOAD_V2] Created bucket '{RUSTFS_RAW_BUCKET}'")
-    except Exception as e:
-        print(f"[DOWNLOAD_V2] Warning checking bucket: {e}")
-    
-    if s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET):
-        print(f"[DOWNLOAD_V2] File already exists: {s3_path}")
+
+    if s3_hook.check_for_key(s3_key, bucket_name=bucket):
+        print(f"file already exists: {s3_path}")
         return s3_path
-    
+
     temp_file = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp:
             temp_file = tmp.name
-        
-        print(f"[DOWNLOAD_V2] Starting streaming download to disk: {url}")
+
+        print(f"starting streaming download to disk: {url}")
         total_bytes = download_url_to_file(url, temp_file)
-        
-        print(f"[DOWNLOAD_V2] Uploading {total_bytes:,} bytes to {s3_path}")
+
+        print(f"uploading {total_bytes:,} bytes to {s3_path}")
         s3_hook.load_file(
             filename=temp_file,
             key=s3_key,
-            bucket_name=RUSTFS_RAW_BUCKET,
+            bucket_name=bucket,
             replace=True
         )
-        print(f"[DOWNLOAD_V2] Successfully uploaded to {s3_path}")
+        print(f"successfully uploaded to {s3_path}")
     finally:
         if temp_file and os.path.exists(temp_file):
             try:
                 os.unlink(temp_file)
             except Exception as e:
-                print(f"[DOWNLOAD_V2] Warning: Could not delete temp file {temp_file}: {e}")
-    
+                print(
+                    f"Warning: Could not delete temp file {temp_file}: {e}")
+
     return s3_path
 
 
@@ -156,248 +110,147 @@ def download_batch_to_rustfs(
     urls: List[str],
     dataset: str,
     zone_type: str,
-    max_parallel: int = 4
+    bucket: str
 ) -> Dict[str, str]:
-    """Downloads multiple URLs in parallel to RustFS S3."""
+    """Downloads multiple URLs sequentially to RustFS S3.
+
+    Args:
+        urls: List of URLs to download
+        dataset: Dataset name (e.g., 'od')
+        zone_type: Zone type (e.g., 'municipios', 'distritos', 'gau')
+        bucket: S3 bucket name (from Airflow Variable)
+
+    Returns:
+        Dictionary mapping URLs to their S3 paths
+    """
     results = {}
     failed = []
-    
-    def download_single(url: str) -> tuple:
+
+    print(
+        f"Starting download of {len(urls)} URLs")
+
+    for i, url in enumerate(urls, 1):
         try:
-            s3_path = download_url_to_rustfs_v2(url, dataset, zone_type)
-            return (url, s3_path, None)
+            s3_path = download_url_to_rustfs(url, dataset, zone_type, bucket)
+            results[url] = s3_path
+            print(
+                f"[{i}/{len(urls)}] Success: {os.path.basename(url)}")
         except Exception as e:
-            return (url, None, str(e))
-    
-    print(f"[BATCH_DOWNLOAD] Starting parallel download of {len(urls)} URLs (max_parallel={max_parallel})")
-    
-    per_download_timeout = DOWNLOAD_TIMEOUT + 60
-    
-    with ThreadPoolExecutor(max_workers=max_parallel) as executor:
-        futures = {executor.submit(download_single, url): url for url in urls}
-        
-        for i, future in enumerate(as_completed(futures), 1):
-            try:
-                url, s3_path, error = future.result(timeout=per_download_timeout)
-                if error:
-                    print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Failed: {os.path.basename(url)} - {error}")
-                    failed.append((url, error))
-                else:
-                    results[url] = s3_path
-                    print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Success: {os.path.basename(url)}")
-            except TimeoutError:
-                url = futures[future]
-                error_msg = f"Download timeout after {per_download_timeout}s"
-                print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Timeout: {os.path.basename(url)} - {error_msg}")
-                failed.append((url, error_msg))
-                future.cancel()
-            except Exception as e:
-                url = futures.get(future, "unknown")
-                error_msg = f"Unexpected error: {str(e)}"
-                print(f"[BATCH_DOWNLOAD] [{i}/{len(urls)}] Error: {os.path.basename(url) if url != 'unknown' else url} - {error_msg}")
-                failed.append((url, error_msg))
-    
-    print(f"[BATCH_DOWNLOAD] Completed: {len(results)} success, {len(failed)} failed")
-    
-    if failed:
-        print(f"[BATCH_DOWNLOAD] Failed URLs:")
-        for url, error in failed[:5]:
-            print(f"  - {os.path.basename(url)}: {error}")
-        if len(failed) > 5:
-            print(f"  ... and {len(failed) - 5} more")
-    
+            error_msg = str(e)
+            print(
+                f"[{i}/{len(urls)}] Failed: {os.path.basename(url)} - {error_msg}")
+            failed.append((url, error_msg))
+
+    print(
+        f"Completed: {len(results)} success, {len(failed)} failed")
+
     return results
 
 
-def delete_batch_from_rustfs(s3_paths: List[str]) -> Dict[str, bool]:
-    """Deletes multiple files from RustFS S3 in batch."""
+def delete_batch_from_rustfs(s3_paths: List[str], bucket: str) -> Dict[str, bool]:
+    """Deletes multiple files from RustFS S3 in batch.
+
+    Args:
+        s3_paths: List of S3 paths to delete (format: s3://bucket/key)
+        bucket: S3 bucket name (from Airflow Variable)
+
+    Returns:
+        Dictionary mapping S3 paths to deletion success status
+    """
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-    
+
     results = {}
     s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
-    
-    print(f"[BATCH_DELETE] Deleting {len(s3_paths)} files from RustFS")
-    
+
+    def _get_s3_key(s3_path: str) -> str:
+        if not s3_path.startswith("s3://"):
+            return None
+        path_without_prefix = s3_path[5:]
+        parts = path_without_prefix.split("/", 1)
+        if len(parts) != 2 or parts[0] != bucket:
+            return None
+        return parts[1]
+
+    print(f"deleting {len(s3_paths)} files from RustFS")
+
+    s3_client = s3_hook.get_conn()
+
     for s3_path in s3_paths:
         try:
-            if not s3_path.startswith("s3://"):
+            s3_key = _get_s3_key(s3_path)
+            
+            if not s3_key:
                 results[s3_path] = False
                 continue
-            
-            path_without_prefix = s3_path[5:]
-            parts = path_without_prefix.split("/", 1)
-            
-            if len(parts) != 2 or parts[0] != RUSTFS_RAW_BUCKET:
-                results[s3_path] = False
-                continue
-            
-            s3_key = parts[1]
-            
-            if s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET):
-                s3_client = s3_hook.get_conn()
-                s3_client.delete_object(Bucket=RUSTFS_RAW_BUCKET, Key=s3_key)
-            
+
+            if s3_hook.check_for_key(s3_key, bucket_name=bucket):
+                s3_client.delete_object(Bucket=bucket, Key=s3_key)
+
             results[s3_path] = True
         except Exception as e:
-            print(f"[BATCH_DELETE] Error deleting {s3_path}: {e}")
+            print(f"error deleting {s3_path}: {e}")
             results[s3_path] = False
-    
+
     success_count = sum(1 for v in results.values() if v)
-    print(f"[BATCH_DELETE] Completed: {success_count}/{len(s3_paths)} deleted successfully")
-    
+    print(
+        f"completed: {success_count}/{len(s3_paths)} deleted successfully")
+
     return results
 
 
-def bulk_insert_from_csv(table_name: str, urls: List[str], deduplicate: bool = False):
-    """Bulk inserts multiple CSVs at once with optional deduplication."""
-    full_table_name = f'{LAKE_LAYER}_{table_name}'
-    con = get_ducklake_connection()
-    
-    if not urls:
-        print(f"[BULK_INSERT] No URLs provided, skipping")
-        return
-    
-    url_list_str = "[" + ", ".join([f"'{u}'" for u in urls]) + "]"
-    
-    insert_sql = f"""
-        INSERT INTO {full_table_name}
-        SELECT 
-            * EXCLUDE (filename),
-            CURRENT_TIMESTAMP AS loaded_at,
-            filename AS source_file
-        FROM read_csv(
-            {url_list_str},
-            filename = true,
-            all_varchar = true
-        )
-    """
-    
-    print(f"[BULK_INSERT] Inserting {len(urls)} files into {full_table_name}")
-    start_time = time.time()
-    
-    try:
-        con.execute(insert_sql)
-        elapsed = time.time() - start_time
-        print(f"[BULK_INSERT] Insert completed in {elapsed:.1f}s")
-    except Exception as e:
-        print(f"[BULK_INSERT] Error during insert: {e}")
-        raise
-    
-    if deduplicate:
-        print(f"[BULK_INSERT] Deduplicating {full_table_name}...")
-        dedup_start = time.time()
-        
-        try:
-            data_columns = _get_data_columns(full_table_name)
-            cols_str = ", ".join(data_columns)
-            
-            dedup_sql = f"""
-                DELETE FROM {full_table_name}
-                WHERE rowid IN (
-                    SELECT rowid FROM (
-                        SELECT rowid,
-                               ROW_NUMBER() OVER (PARTITION BY {cols_str} ORDER BY loaded_at DESC) as rn
-                        FROM {full_table_name}
-                    ) WHERE rn > 1
-                )
-            """
-            con.execute(dedup_sql)
-            
-            dedup_elapsed = time.time() - dedup_start
-            print(f"[BULK_INSERT] Deduplication completed in {dedup_elapsed:.1f}s")
-        except Exception as e:
-            print(f"[BULK_INSERT] Warning: Deduplication failed (non-critical): {e}")
-
-
-def create_partitioned_table_from_csv(
+def create_table_from_csv(
     table_name: str,
     url: str,
     partition_by_date: bool = True,
     fecha_as_timestamp: bool = False
 ):
     """Creates a DuckDB table with optional partitioning by year/month/day."""
-    full_table_name = f'{LAKE_LAYER}_{table_name}'
     con = get_ducklake_connection()
-    
-    print(f"[CREATE_TABLE_V3] Creating table {full_table_name} with schema from {os.path.basename(url)}")
-    
-    source_sql = _get_csv_source_query([url])
-    
-    if fecha_as_timestamp:
-        create_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS {full_table_name} AS
-            SELECT 
-                strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::TIMESTAMP AS fecha,
-                * EXCLUDE (fecha)
-            FROM ({source_sql})
-            LIMIT 0;
-        """
-    else:
-        create_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS {full_table_name} AS
-            {source_sql}
-            LIMIT 0;
-        """
-    
-    con.execute(create_table_sql)
-    
-    if partition_by_date:
-        try:
-            if fecha_as_timestamp:
-                ensure_timestamp_sql = f"""
-                    ALTER TABLE {full_table_name} 
-                    ALTER COLUMN fecha TYPE TIMESTAMP;
-                """
-                try:
-                    con.execute(ensure_timestamp_sql)
-                    print(f"[CREATE_TABLE_V3] Ensured fecha column is TIMESTAMP")
-                except Exception as e:
-                    print(f"[CREATE_TABLE_V3] Note: Could not alter fecha type (may already be TIMESTAMP): {e}")
-                
-                partition_sql = f"""
-                    ALTER TABLE {full_table_name} 
-                    SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));
-                """
-            else:
-                partition_sql = f"""
-                    ALTER TABLE {full_table_name} 
-                    SET PARTITIONED BY (
-                        substr(fecha, 1, 4)::INTEGER,
-                        substr(fecha, 5, 2)::INTEGER,
-                        substr(fecha, 7, 2)::INTEGER
-                    );
-                """
-            con.execute(partition_sql)
-            print(f"[CREATE_TABLE_V3] Applied partitioning")
-        except Exception as e:
-            print(f"[CREATE_TABLE_V3] Warning: Could not apply partitioning (table may already be partitioned): {e}")
-    
-    print(f"[CREATE_TABLE_V3] Table {full_table_name} is ready")
-    return {'status': 'created', 'table_name': full_table_name, 'partitioned': partition_by_date, 'fecha_as_timestamp': fecha_as_timestamp}
 
+    print(f"Creating table {table_name}")
 
-def finalize_table(table_name: str, run_analyze: bool = True) -> Dict[str, Any]:
-    """Finalizes a table after bulk operations and returns stats."""
-    con = get_ducklake_connection()
+    source_sql = _get_csv_source_query([url], fecha_as_timestamp=fecha_as_timestamp)
+
+    con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {table_name} AS
+        {source_sql}
+        LIMIT 0;
+    """)
+
+    if not partition_by_date:
+        return {
+            'status': 'created',
+            'table_name': table_name,
+            'partitioned': False,
+            'fecha_as_timestamp': fecha_as_timestamp
+        }
+
+    partition_clause = ("SET PARTITIONED BY (year(fecha), month(fecha), day(fecha));"
+    ) if fecha_as_timestamp else ("SET PARTITIONED BY (substr(fecha, 1, 4)::INTEGER, substr(fecha, 5, 2)::INTEGER, substr(fecha, 7, 2)::INTEGER);")
     
-    print(f"[FINALIZE] Finalizing table {table_name}")
-    
-    try:
-        count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-        print(f"[FINALIZE] Table {table_name} has {count:,} records")
-        return {'status': 'success', 'table_name': table_name, 'record_count': count}
+    try: 
+        con.execute(f"""
+            ALTER TABLE {table_name} 
+            {partition_clause}
+        """)
+        print(f"Applied partitioning")
     except Exception as e:
-        print(f"[FINALIZE] Warning: Could not get record count: {e}")
-        return {'status': 'success', 'table_name': table_name}
+        print(f"Warning: Could not apply partitioning (table may already be partitioned): {e}")
+
+    return {
+        'status': 'created',
+        'table_name': table_name,
+        'partitioned': partition_by_date,
+        'fecha_as_timestamp': fecha_as_timestamp
+    }
 
 
-def create_url_batches(urls: List[str], batch_size: int = 10) -> List[List[str]]:
+def create_url_batches(urls: List[str], batch_size: int = 2) -> List[List[str]]:
     """Divides a list of URLs into batches for parallel processing."""
     if not urls:
         return []
-    
+
     batches = [urls[i:i + batch_size] for i in range(0, len(urls), batch_size)]
-    print(f"[BATCH] Created {len(batches)} batches of max {batch_size} URLs each")
     
     return batches
 
@@ -406,107 +259,87 @@ def copy_batch_to_table(
     table_name: str,
     s3_paths: List[str],
     original_urls: List[str] = None,
-    threads: int = 4,
     fecha_as_timestamp: bool = False,
     **context
 ) -> Dict[str, Any]:
     """Copies a batch of CSV files from S3/RustFS to DuckDB using INSERT INTO."""
     from utils.gcp import execute_sql_or_cloud_run
-    
-    full_table_name = table_name if table_name.startswith('bronze_') else f'bronze_{table_name}'
-    
+
     if not s3_paths:
         return {'success': 0, 'failed': 0, 'errors': []}
-    
+
     if original_urls is None:
         original_urls = s3_paths
-    
-    print(f"[COPY_BATCH] Processing {len(s3_paths)} files from RustFS into {full_table_name} with {threads} threads using executor")
-    if fecha_as_timestamp:
-        print(f"[COPY_BATCH] Will parse fecha to TIMESTAMP")
-    
-    start_time = time.time()
-    
+
+    print(f"copying {len(s3_paths)} files from RustFS into {table_name}")
+
     union_parts = []
     for i, s3_path in enumerate(s3_paths):
-        source_file_value = original_urls[i] if i < len(original_urls) else s3_path
+        source_file_value = original_urls[i] if i < len(
+            original_urls) else s3_path
         source_file_value_escaped = source_file_value.replace("'", "''")
         s3_path_escaped = s3_path.replace("'", "''")
-        
-        if fecha_as_timestamp:
-            union_parts.append(f"""
-                SELECT 
-                    strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::TIMESTAMP AS fecha,
-                    * EXCLUDE (fecha, filename),
-                    CURRENT_TIMESTAMP AS loaded_at,
-                    '{source_file_value_escaped}' AS source_file
-                FROM read_csv(
-                    '{s3_path_escaped}',
-                    filename = true,
-                    header = true,
-                    all_varchar = true
-                )
-            """)
-        else:
-            union_parts.append(f"""
-                SELECT 
-                    * EXCLUDE (filename),
-                    CURRENT_TIMESTAMP AS loaded_at,
-                    '{source_file_value_escaped}' AS source_file
-                FROM read_csv(
-                    '{s3_path_escaped}',
-                    filename = true,
-                    header = true,
-                    all_varchar = true
-                )
-            """)
-    
+
+        fecha_column = (
+            "strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::TIMESTAMP AS fecha,\n"
+            if fecha_as_timestamp
+            else ""
+        )
+        exclude_clause = (
+            "* EXCLUDE (fecha, filename),"
+            if fecha_as_timestamp
+            else "* EXCLUDE (filename),"
+        )
+
+        union_parts.append(f"""
+            SELECT 
+                {fecha_column}{exclude_clause}
+                CURRENT_TIMESTAMP AS loaded_at,
+                '{source_file_value_escaped}' AS source_file
+            FROM read_csv(
+                '{s3_path_escaped}',
+                filename = true,
+                header = true,
+                all_varchar = true
+            )
+        """)
+
     sql_query = f"""
-        SET threads={threads};
-        SET worker_threads={threads};
-        SET preserve_insertion_order=false;
-        SET enable_object_cache=true;
-        INSERT INTO {full_table_name}
+        INSERT INTO {table_name}
         {' UNION ALL '.join(union_parts)};
     """
-    
+
     try:
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         success_count = len(s3_paths)
-        print(f"[COPY_BATCH] Successfully processed {len(s3_paths)} files using executor")
+        print(f"Successfully processed {len(s3_paths)} files")
+        print(result)
     except Exception as e:
         error_msg = f"Error copying batch: {str(e)}"
-        print(f"[COPY_BATCH] Batch insert failed: {error_msg}")
+        print(f"Batch insert failed: {error_msg}")
         return {
             'success': 0,
             'failed': len(s3_paths),
             'errors': [error_msg],
-            'elapsed_seconds': time.time() - start_time
         }
-    
-    elapsed = time.time() - start_time
-    print(f"[COPY_BATCH] Completed in {elapsed:.1f}s: {success_count} success, 0 failed")
-    
+
     return {
         'success': success_count,
         'failed': 0,
         'errors': [],
-        'elapsed_seconds': elapsed
     }
 
 
 def copy_from_csv_batch(
     table_name: str,
     batch: Dict[str, Any],
-    threads: int = 4,
     fecha_as_timestamp: bool = False,
     **context
 ) -> Dict[str, Any]:
     """Processes a batch of downloaded files using INSERT INTO with multi-threading."""
-    full_table_name = f'bronze_{table_name}'
     downloaded = batch.get('downloaded', [])
     batch_index = batch.get('batch_index', 0)
-    
+
     if not downloaded:
         return {
             'batch_index': batch_index,
@@ -514,21 +347,21 @@ def copy_from_csv_batch(
             'processed': 0,
             'failed': 0
         }
-    
+
     s3_paths = [item['s3_path'] for item in downloaded]
-    original_urls = [item.get('original_url', item['s3_path']) for item in downloaded]
-    
-    print(f"[COPY_BATCH_TASK] Processing batch {batch_index}: {len(s3_paths)} files using executor")
-    
+    original_urls = [item.get('original_url', item['s3_path'])
+                     for item in downloaded]
+
+    print(f"Processing batch {batch_index}: {len(s3_paths)} files")
+
     result = copy_batch_to_table(
-        table_name=full_table_name,
+        table_name=table_name,
         s3_paths=s3_paths,
         original_urls=original_urls,
-        threads=threads,
         fecha_as_timestamp=fecha_as_timestamp,
         **context
     )
-    
+
     return {
         'batch_index': batch_index,
         'status': 'success' if result['failed'] == 0 else 'partial',
@@ -538,14 +371,18 @@ def copy_from_csv_batch(
     }
 
 
-def get_mitma_urls(dataset, zone_type, start_date, end_date):
-    """Fetches MITMA URLs from RSS feed filtered by dataset, zone type, and date range."""
+def get_mitma_urls(dataset, zone_type, fechas: list[str]):
+    """Fetches MITMA URLs from RSS feed filtered by dataset, zone type, and a set of dates.
+
+    Parameters:
+    - dataset: currently only 'od'
+    - zone_type: 'distritos' | 'municipios' | 'gau'
+    - fechas: list of dates to fetch, as 'YYYYMMDD' (or 'YYYY-MM-DD', which will be normalized)
+    """
     rss_url = "https://movilidad-opendata.mitma.es/RSS.xml"
 
     dataset_map = {
         "od": ("viajes", "Viajes"),
-        "people_day": ("personas", "Personas_dia"),
-        "overnight_stay": ("pernoctaciones", "Pernoctaciones")
     }
 
     if zone_type not in ["distritos", "municipios", "gau"]:
@@ -570,13 +407,15 @@ def get_mitma_urls(dataset, zone_type, start_date, end_date):
 
     unique_matches = list(set(matches))
 
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    if not fechas:
+        print(f"Found 0 URLs for {dataset} {zone_type}: empty fechas list")
+        return []
+
+    fechas_set = {str(f).replace("-", "") for f in fechas if f}
 
     filtered_urls = []
     for url, date_str in unique_matches:
-        file_date = datetime.strptime(date_str, "%Y%m%d")
-        if start_dt <= file_date <= end_dt:
+        if date_str in fechas_set:
             filtered_urls.append((url, date_str))
 
     filtered_urls.sort(key=lambda x: x[1])
@@ -584,114 +423,12 @@ def get_mitma_urls(dataset, zone_type, start_date, end_date):
     urls = [url for url, _ in filtered_urls]
 
     print(
-        f"Found {len(urls)} URLs for {dataset} {zone_type} from {start_date} to {end_date}")
+        f"Found {len(urls)} URLs for {dataset} {zone_type} for {len(fechas_set)} requested dates")
 
     if not urls:
-        print(f"WARNING: No URLs found. Check if data exists for the requested date range.")
+        print(f"WARNING: No URLs found. Check if data exists for the requested dates.")
 
     return urls
-
-
-def download_url_to_rustfs(url: str, dataset: str, zone_type: str) -> str:
-    """Downloads a file from URL and uploads to RustFS S3 (legacy version, use download_url_to_rustfs_v2)."""
-    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-        
-    parsed_url = urllib.parse.urlparse(url)
-    filename = os.path.basename(parsed_url.path)
-    
-    if not filename:
-        raise ValueError(f"Could not extract filename from URL: {url}")
-    
-    s3_key = f"{dataset}/{zone_type}/{filename}"
-    s3_path = f"s3://{RUSTFS_RAW_BUCKET}/{s3_key}"
-    
-    print(f"[DOWNLOAD] Target S3 path: {s3_path}")
-    
-    s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
-    
-    try:
-        bucket_exists = s3_hook.check_for_bucket(RUSTFS_RAW_BUCKET)
-        if not bucket_exists:
-            s3_hook.create_bucket(bucket_name=RUSTFS_RAW_BUCKET)
-        else:
-            print(f"[DOWNLOAD] Bucket '{RUSTFS_RAW_BUCKET}' exists")
-    except Exception as bucket_error:
-        print(f"[DOWNLOAD] Error checking bucket: {bucket_error}")
-        raise bucket_error
-    
-    file_exists = s3_hook.check_for_key(s3_key, bucket_name=RUSTFS_RAW_BUCKET)
-    if file_exists:
-        print(f"[DOWNLOAD] File already exists in RustFS: {s3_path}")
-        return s3_path
-    
-    print(f"[DOWNLOAD] Downloading from URL...")
-    req = urllib.request.Request(url, headers={"User-Agent": "MITMA-DuckLake-Loader"})
-    
-    file_content = None
-    try:
-        with urllib.request.urlopen(req, timeout=300) as response:
-            file_content = response.read()
-            print(f"[DOWNLOAD] Downloaded {len(file_content)} bytes")
-    except Exception as e:
-        raise RuntimeError(f"Failed to download file from {url}: {e}")
-    
-    print(f"[DOWNLOAD] Uploading to RustFS bucket '{RUSTFS_RAW_BUCKET}'...")
-    try:
-        s3_hook.load_bytes(
-            bytes_data=file_content,
-            key=s3_key,
-            bucket_name=RUSTFS_RAW_BUCKET,
-            replace=True
-        )
-        print(f"[DOWNLOAD] Successfully uploaded to {s3_path}")
-    except Exception as e:
-        raise RuntimeError(f"Failed to upload file to RustFS: {e}")
-    finally:
-        if file_content is not None:
-            del file_content
-    
-    return s3_path
-
-
-def delete_file_from_rustfs(s3_path: str) -> bool:
-    """Deletes a single file from RustFS S3 bucket."""
-    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-    print(f"[DELETE] Attempting to delete file from RustFS: {s3_path}")
-    
-    if not s3_path.startswith("s3://"):
-        print(f"[DELETE] Invalid S3 path format: {s3_path}")
-        return False
-    
-    path_without_prefix = s3_path[5:]
-    parts = path_without_prefix.split("/", 1)
-    
-    if len(parts) != 2:
-        print(f"[DELETE] Could not parse S3 path: {s3_path}")
-        return False
-    
-    bucket_name = parts[0]
-    s3_key = parts[1]
-    
-    if bucket_name != RUSTFS_RAW_BUCKET:
-        print(f"[DELETE] Only files from {RUSTFS_RAW_BUCKET} bucket can be deleted. Got: {bucket_name}")
-        return False
-    
-    print(f"[DELETE] Bucket: {bucket_name}, Key: {s3_key}")
-    
-    s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
-    
-    try:
-        if s3_hook.check_for_key(s3_key, bucket_name=bucket_name):
-            s3_client = s3_hook.get_conn()
-            s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
-            print(f"[DELETE] Successfully deleted file: {s3_path}")
-            return True
-        else:
-            print(f"[DELETE] File does not exist in RustFS: {s3_path} (may have been already deleted)")
-            return True
-    except Exception as e:
-        print(f"[DELETE] Error deleting file from RustFS: {e}")
-        return False
 
 
 def get_mitma_zoning_urls(zone_type):
@@ -911,37 +648,29 @@ def load_zonificacion(con, zone_type, lake_layer='bronze'):
 
     print(f"Table {table_name} merged successfully with {len(df)} records.")
 
-
-def _get_data_columns(table_name):
-    """Gets business columns excluding audit columns (loaded_at, source_file, source_url)."""
-    audit_cols = "('loaded_at', 'source_file', 'source_url')"
-
-    con = get_ducklake_connection()
-    df = con.execute(f"""
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = '{table_name}'
-        AND column_name NOT IN {audit_cols}
-        ORDER BY ordinal_position;
-    """).fetchdf()
-    return df['column_name'].tolist()
-
-
-def _build_merge_condition(columns):
-    """Builds a robust ON clause that handles NULLs correctly."""
-    return " AND ".join([
-        f"target.{col} IS NOT DISTINCT FROM source.{col}"
-        for col in columns
-    ])
-
-
-def _get_csv_source_query(urls):
-    """Generates SELECT subquery for reading CSVs with standard configuration."""
+def _get_csv_source_query(urls, fecha_as_timestamp=False):
+    """Generates SELECT subquery for reading CSVs with standard configuration.
+    
+    Args:
+        urls: List of URLs to read
+        fecha_as_timestamp: If True, transforms fecha column to TIMESTAMP format
+    """
     url_list_str = "[" + ", ".join([f"'{u}'" for u in urls]) + "]"
+
+    fecha_column = (
+        "strptime(CAST(fecha AS VARCHAR), '%Y%m%d')::TIMESTAMP AS fecha,\n            "
+        if fecha_as_timestamp
+        else ""
+    )
+    exclude_clause = (
+        "* EXCLUDE (fecha, filename),"
+        if fecha_as_timestamp
+        else "* EXCLUDE (filename),"
+    )
 
     return f"""
         SELECT 
-            * EXCLUDE (filename),
+            {fecha_column}{exclude_clause}
             CURRENT_TIMESTAMP AS loaded_at,
             filename AS source_file
         FROM read_csv(
@@ -951,243 +680,20 @@ def _get_csv_source_query(urls):
         )
     """
 
-
-def create_table_from_csv(table_name, url):
-    """Creates a DuckDB table from a single CSV URL if it doesn't exist."""
-    full_table_name = f'{LAKE_LAYER}_{table_name}'
-    con = get_ducklake_connection()
-
-    source_sql = _get_csv_source_query([url])
-
-    print(f"Verifying schema for {full_table_name} using first file...")
-    con.execute(f"""
-        CREATE TABLE IF NOT EXISTS {full_table_name} AS
-        {source_sql}
-        LIMIT 0;
-    """)
-    print(f"Table {full_table_name} is ready.")
-
-
-def merge_from_csv(table_name, url):
-    """Merges data from a single CSV URL into an existing DuckDB table."""
-    full_table_name = f'{LAKE_LAYER}_{table_name}'
-    con = get_ducklake_connection()
-
-    merge_keys = _get_data_columns(full_table_name)
-    on_clause = _build_merge_condition(merge_keys)
-
-    source_sql = _get_csv_source_query([url])
-
-    print(f"Merging data from {url} into {full_table_name}...")
-    try:
-        con.execute(f"""
-            MERGE INTO {full_table_name} AS target
-            USING ({source_sql}) AS source
-            ON {on_clause}
-            WHEN NOT MATCHED THEN
-                INSERT *;
-        """)
-        print(f"  Merged successfully.")
-    except Exception as e:
-        error_str = str(e)
-
-        is_transaction_error = (
-            "TransactionContext" in error_str or
-            "Failed to commit" in error_str or
-            "Failed to execute query" in error_str
-        )
-
-        if is_transaction_error:
-            print(
-                f"  Transaction error detected - forcing new connection for next task")
-            try:
-                get_ducklake_connection(force_new=True)
-            except:
-                pass
-
-        error_msg = f"  Error processing {url}: {e}"
-        print(error_msg)
-        # Re-raise exception to ensure Airflow task fails
-        raise RuntimeError(error_msg) from e
-
-
-def create_table_from_json(table_name, url, year: int = None):
-    """Creates a DuckDB table from a single JSON URL if it doesn't exist."""
-    full_table_name = f'{LAKE_LAYER}_{table_name}'
-    con = get_ducklake_connection()
-
-    source_sql = _get_json_source_query(url, year=year)
-
-    print(f"Verifying schema for {full_table_name} using first file...")
+def filter_json_urls(table_name: str, urls: list[str]):
+    """Generic function to filter JSON table URLs using source_url column.
     
-    table_exists = False
-    try:
-        result = con.execute(f"""
-            SELECT COUNT(*) as cnt FROM information_schema.tables 
-            WHERE table_schema = 'main' AND table_name = '{full_table_name}'
-        """).fetchone()
-        table_exists = result[0] > 0
-    except:
-        pass
-    
-    con.execute(f"""
-        CREATE TABLE IF NOT EXISTS {full_table_name} AS
-        {source_sql}
-        LIMIT 0;
-    """)
-    
-    if year is not None and not table_exists:
-        try:
-            con.execute(f"ALTER TABLE {full_table_name} SET PARTITIONED BY (year);")
-            print(f"  Added partitioning by year for {full_table_name}")
-        except Exception as partition_error:
-            print(f"  Could not add partitioning (non-critical): {partition_error}")
-
-    print(f"Table {full_table_name} is ready.")
-
-
-def merge_from_json(table_name, url, key_columns=None, year: int = None):
-    """Merges data from a single JSON URL into an existing DuckDB table."""
-    full_table_name = f'{LAKE_LAYER}_{table_name}'
-    con = get_ducklake_connection()
-
-    if key_columns is None:
-        merge_keys = _get_data_columns(full_table_name)
-    else:
-        existing_cols = _get_data_columns(full_table_name)
-        missing = [k for k in key_columns if k not in existing_cols and k != 'year']
-        if missing:
-            raise ValueError(
-                f"Key columns {missing} not found in table metadata.")
-        merge_keys = key_columns
-
-    on_clause = _build_merge_condition(merge_keys)
-    source_sql = _get_json_source_query(url, year=year)
-
-    print(f"Merging data from {url} into {full_table_name}...")
-    if year is not None:
-        print(f"  Adding year column: {year}")
-    try:
-        con.execute(f"""
-            MERGE INTO {full_table_name} AS target
-            USING ({source_sql}) AS source
-            ON {on_clause}
-            WHEN NOT MATCHED THEN
-                INSERT *;
-        """)
-        print(f"  Merged successfully.")
-    except Exception as e:
-        error_str = str(e)
-        is_transaction_error = (
-            "TransactionContext" in error_str or
-            "Failed to commit" in error_str or
-            "Failed to execute query" in error_str
-        )
-
-        if is_transaction_error:
-            print(
-                f"  Transaction error detected - forcing new connection for next task")
-            try:
-                get_ducklake_connection(force_new=True)
-            except:
-                pass
-
-        error_msg = f"  Error processing {url}: {e}"
-        print(error_msg)
-        raise RuntimeError(error_msg) from e
-
-
-def _get_json_source_query(url, year: int = None):
-    """Generates SELECT subquery for reading JSON with optional year column."""
-    year_column = f",\n            {year} AS year" if year is not None else ""
-    return f"""
-        SELECT 
-            *,
-            CURRENT_TIMESTAMP AS loaded_at,
-            '{url}' AS source_url{year_column}
-        FROM read_json('{url}', format='array')
+    Args:
+        table_name: Name of the bronze table to check for existing URLs
+        urls: List of URLs to filter
+        
+    Returns:
+        List of URLs that haven't been ingested yet
     """
-
-
-def ine_renta_filter_urls(urls: list[str]):
-    """Filters INE Renta URLs to exclude already ingested ones."""
-    table_name = 'bronze_ine_renta_municipio'
-    return _filter_json_urls(table_name, urls)
-
-
-def ine_municipios_filter_urls(urls: list[str]):
-    """Filters INE Municipios URLs to exclude already ingested ones."""
-    table_name = 'bronze_ine_municipios'
-    return _filter_json_urls(table_name, urls)
-
-
-def ine_empresas_filter_urls(urls: list[str]):
-    """Filters INE Empresas URLs to exclude already ingested ones."""
-    table_name = 'bronze_ine_empresas_municipio'
-    return _filter_json_urls(table_name, urls)
-
-
-def ine_poblacion_filter_urls(urls: list[str]):
-    """Filters INE Poblacion URLs to exclude already ingested ones."""
-    table_name = 'bronze_ine_poblacion_municipio'
-    return _filter_json_urls(table_name, urls)
-
-
-def mitma_create_table(dataset: str, zone_type: str, urls: list[str]):
-    """Creates the table for MITMA data if it doesn't exist."""
-    table_name = f'mitma_{dataset}_{zone_type}'
-
-    if not urls:
-        raise ValueError(f"No URLs provided to create table {table_name}")
-
-    first_url = urls[0]
-    print(
-        f"[TASK] Creating table {table_name} if not exists, using first URL: {first_url}")
-
-    create_table_from_csv(table_name, first_url)
-
-    return {'status': 'success', 'table_name': table_name}
-
-
-def mitma_filter_urls(dataset: str, zone_type: str, urls: list[str]):
-    """Filters MITMA URLs to exclude already ingested ones."""
-    table_name = f'bronze_mitma_{dataset}_{zone_type}'
-    return _filter_csv_urls(table_name, urls)
-
-
-def mitma_ine_relations_filter_urls(urls: list[str]):
-    """Filters MITMA-INE Relations URLs to exclude already ingested ones."""
-    table_name = 'bronze_mitma_ine_relations'
-    return _filter_csv_urls(table_name, urls)
-
-
-def _filter_json_urls(table_name: str, urls: list[str]):
-    """Generic function to filter JSON table URLs using source_url column."""
-    print(f"[TASK] Filtering URLs for {table_name}")
-    print(f"[TASK] Total URLs to check: {len(urls)}")
+    print(f"Filtering {len(urls)} URLs for {table_name}")
 
     con = get_ducklake_connection()
 
-    # Check if table exists
-    try:
-        table_exists = con.execute(f"""
-            SELECT COUNT(*) as count 
-            FROM information_schema.tables 
-            WHERE table_name = '{table_name}'
-        """).fetchone()[0] > 0
-
-        if not table_exists:
-            print(
-                f"[TASK] Table {table_name} does not exist. Returning all URLs.")
-            return urls
-
-        print(f"[TASK] Table {table_name} exists. Filtering URLs...")
-    except Exception as e:
-        print(f"[TASK] Warning: Could not check if table exists: {e}")
-        print(f"[TASK] Assuming table does not exist. Returning all URLs.")
-        return urls
-
-    # Table exists, filter URLs
     try:
         url_list_str = "[" + ", ".join([f"'{u}'" for u in urls]) + "]"
 
@@ -1204,84 +710,14 @@ def _filter_json_urls(table_name: str, urls: list[str]):
         ingested_urls = set(
             ingested_df['source_url'].tolist()) if not ingested_df.empty else set()
         print(
-            f"[TASK] Found {len(ingested_urls)} already ingested URLs (out of {len(urls)} checked)")
+            f"Found {len(ingested_urls)} already ingested URLs (out of {len(urls)} checked)")
     except Exception as e:
-        print(f"[TASK] Warning: Could not check existing URLs: {e}")
-        print(f"[TASK] Proceeding as if no URLs are ingested")
-        ingested_urls = set()
-
-    new_urls = [url for url in urls if url not in ingested_urls]
-    print(
-        f"[TASK] Filtered result: {len(new_urls)} new URLs to ingest (skipping {len(urls) - len(new_urls)} already ingested)")
-
-    if len(new_urls) == 0:
-        print(
-            f"[TASK] All URLs have already been ingested. No new data to process.")
-    else:
-        print(
-            f"[TASK] URLs to ingest: {new_urls[:3]}{'...' if len(new_urls) > 3 else ''}")
-
-    return new_urls
-
-
-def _filter_csv_urls(table_name: str, urls: list[str]):
-    """Generic function to filter CSV table URLs using source_file column."""
-    print(f"[TASK] Filtering URLs for {table_name}")
-    print(f"[TASK] Total URLs to check: {len(urls)}")
-
-    con = get_ducklake_connection()
-
-    # Check if table exists
-    try:
-        table_exists = con.execute(f"""
-            SELECT COUNT(*) as count 
-            FROM information_schema.tables 
-            WHERE table_name = '{table_name}'
-        """).fetchone()[0] > 0
-
-        if not table_exists:
-            print(
-                f"[TASK] Table {table_name} does not exist. Returning all URLs.")
-            return urls
-
-        print(f"[TASK] Table {table_name} exists. Filtering URLs...")
-    except Exception as e:
-        print(f"[TASK] Warning: Could not check if table exists: {e}")
-        print(f"[TASK] Assuming table does not exist. Returning all URLs.")
+        print(f"Warning: Could not check existing URLs (table may not exist): {e}")
+        print(f"Returning all URLs")
         return urls
 
-    # Table exists, filter URLs
-    try:
-        url_list_str = "[" + ", ".join([f"'{u}'" for u in urls]) + "]"
-
-        ingested_df = con.execute(f"""
-            WITH url_list AS (
-                SELECT unnest({url_list_str}) AS url_to_check
-            )
-            SELECT DISTINCT source_file 
-            FROM {table_name}
-            WHERE source_file IS NOT NULL
-              AND source_file IN (SELECT url_to_check FROM url_list)
-        """).fetchdf()
-
-        ingested_urls = set(
-            ingested_df['source_file'].tolist()) if not ingested_df.empty else set()
-        print(
-            f"[TASK] Found {len(ingested_urls)} already ingested URLs (out of {len(urls)} checked)")
-    except Exception as e:
-        print(f"[TASK] Warning: Could not check existing URLs: {e}")
-        print(f"[TASK] Proceeding as if no URLs are ingested")
-        ingested_urls = set()
-
     new_urls = [url for url in urls if url not in ingested_urls]
     print(
-        f"[TASK] Filtered result: {len(new_urls)} new URLs to ingest (skipping {len(urls) - len(new_urls)} already ingested)")
-
-    if len(new_urls) == 0:
-        print(
-            f"[TASK] All URLs have already been ingested. No new data to process.")
-    else:
-        print(
-            f"[TASK] URLs to ingest: {new_urls[:3]}{'...' if len(new_urls) > 3 else ''}")
+        f"Filtered result: {len(new_urls)} new URLs to ingest (skipping {len(urls) - len(new_urls)} already ingested)")
 
     return new_urls

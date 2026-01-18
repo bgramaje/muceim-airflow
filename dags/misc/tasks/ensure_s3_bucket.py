@@ -7,22 +7,21 @@ from airflow.sdk import task
 
 
 @task
-def PRE_s3_bucket():
+def PRE_s3_bucket(bucket_name: str):
     """
-    Airflow task to ensure RustFS bucket exists.
+    Airflow task to ensure S3 bucket exists.
     Creates the bucket if it doesn't exist.
+    
+    Args:
+        bucket_name: Name of the bucket to check/create
     
     Returns:
     - Dict with status information
     """
-    print("[TASK] Checking if RustFS bucket exists...")
+    print(f"[TASK] Checking if bucket '{bucket_name}' exists...")
     
     try:
         from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-        from airflow.sdk import Variable
-        
-        # Get bucket name from Airflow Variables
-        bucket_name = Variable.get('RUSTFS_BUCKET', default='mitma')
         
         # Use S3Hook to connect to RustFS
         s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')

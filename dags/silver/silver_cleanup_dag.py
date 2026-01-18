@@ -24,7 +24,7 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 SOURCE_TABLE_PATTERNS = {
     'mitma': {
         'pattern': 'silver_mitma%',
-        'datasets': ['all', 'od', 'people_day', 'overnight_stay', 'zones', 'distances', 'ine_mapping'],
+        'datasets': ['all', 'od', 'zones', 'distances', 'ine_mapping'],
     },
     'ine': {
         'pattern': 'silver_ine%',
@@ -366,7 +366,7 @@ with DAG(
         "dataset": Param(
             type="string",
             default="all",
-            enum=["all", "od", "people_day", "overnight_stay", "zones", "distances", "ine_mapping"],
+            enum=["all", "od", "zones", "distances", "ine_mapping"],
             description="Which dataset to clean. 'all' cleans everything for the selected source."
         ),
     },

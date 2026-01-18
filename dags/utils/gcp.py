@@ -61,49 +61,117 @@ def _wait_for_cloud_run_execution(
 ) -> None:
     """Waits for Cloud Run execution to complete and verifies its status. Raises RuntimeError on failure or timeout."""
     start_time = time.time()
+    last_log_time = start_time
+    log_interval = 60  # Log status every 60 seconds
+    
+    print(f"[CLOUD_RUN] Waiting for execution to complete: {execution_name}")
     
     while True:
-        if time.time() - start_time > max_wait_time:
+        elapsed = time.time() - start_time
+        if elapsed > max_wait_time:
             raise RuntimeError(f"Job execution timed out after {max_wait_time} seconds")
         
         try:
             execution = executions_client.get_execution(name=execution_name)
-            conditions = getattr(execution, 'conditions', None)
             
-            if not conditions:
-                time.sleep(poll_interval)
-                continue
+            # Check completion_time first - if set, execution is done
+            completion_time = getattr(execution, 'completion_time', None)
+            if completion_time:
+                # Execution has completed, check final status
+                print(f"[CLOUD_RUN] Execution completed at {completion_time}")
+                
+                # Check task counts
+                succeeded_count = getattr(execution, 'succeeded_count', 0)
+                failed_count = getattr(execution, 'failed_count', 0)
+                running_count = getattr(execution, 'running_count', 0)
+                
+                print(f"[CLOUD_RUN] Task counts - Succeeded: {succeeded_count}, Failed: {failed_count}, Running: {running_count}")
+                
+                # Find Ready condition to get final status
+                ready_condition = None
+                conditions = getattr(execution, 'conditions', []) or []
+                for cond in conditions:
+                    cond_type = getattr(cond, 'type', None)
+                    if cond_type == 'Ready' or (isinstance(cond_type, str) and 'Ready' in cond_type):
+                        ready_condition = cond
+                        break
+                
+                if ready_condition:
+                    state = getattr(ready_condition, 'state', None)
+                    state_str = str(state).upper() if state else "UNKNOWN"
+                    
+                    if _is_execution_succeeded(state):
+                        print(f"[CLOUD_RUN] Execution succeeded")
+                        return
+                    
+                    if _is_execution_failed(state):
+                        error_msg = getattr(ready_condition, 'message', None) or f"Failed: {getattr(ready_condition, 'reason', 'Unknown error')}"
+                        
+                        error_details = []
+                        if hasattr(execution, 'containers') and execution.containers:
+                            for container in execution.containers:
+                                exit_code = getattr(container, 'exit_code', None)
+                                if exit_code and exit_code != 0:
+                                    error_details.append(f"Container exit code: {exit_code}")
+                        
+                        if hasattr(execution, 'log_uri') and execution.log_uri:
+                            error_details.append(f"Logs available at: {execution.log_uri}")
+                        
+                        _get_cloud_run_logs(execution_name)
+                        if error_details:
+                            error_msg += f" | {' | '.join(error_details)}"
+                        
+                        raise RuntimeError(f"{error_msg}. Execution: {execution_name}")
+                    
+                    # If we have completion_time but state is not succeeded/failed, check counts
+                    if failed_count > 0:
+                        raise RuntimeError(f"Execution failed: {failed_count} task(s) failed. Execution: {execution_name}")
+                    
+                    if succeeded_count > 0 and running_count == 0:
+                        print(f"[CLOUD_RUN] Execution completed successfully ({succeeded_count} task(s) succeeded)")
+                        return
+                
+                # If completion_time is set but we can't determine status, assume success if no failures
+                if failed_count == 0:
+                    print(f"[CLOUD_RUN] Execution completed (no failures detected)")
+                    return
+                else:
+                    raise RuntimeError(f"Execution completed with failures: {failed_count} task(s) failed. Execution: {execution_name}")
             
-            latest_condition = conditions[-1]
-            state = latest_condition.state
+            # Execution still running - check conditions for progress
+            conditions = getattr(execution, 'conditions', []) or []
+            ready_condition = None
+            for cond in conditions:
+                cond_type = getattr(cond, 'type', None)
+                if cond_type == 'Ready' or (isinstance(cond_type, str) and 'Ready' in cond_type):
+                    ready_condition = cond
+                    break
             
-            if _is_execution_succeeded(state):
-                return
+            # Log status periodically
+            if time.time() - last_log_time >= log_interval:
+                running_count = getattr(execution, 'running_count', 0)
+                succeeded_count = getattr(execution, 'succeeded_count', 0)
+                failed_count = getattr(execution, 'failed_count', 0)
+                print(f"[CLOUD_RUN] Still waiting... Elapsed: {int(elapsed)}s | Running: {running_count}, Succeeded: {succeeded_count}, Failed: {failed_count}")
+                last_log_time = time.time()
             
-            if _is_execution_failed(state):
-                error_msg = getattr(latest_condition, 'message', None) or f"Failed: {getattr(latest_condition, 'reason', 'Unknown error')}"
-                
-                error_details = []
-                if hasattr(execution, 'containers') and execution.containers:
-                    for container in execution.containers:
-                        exit_code = getattr(container, 'exit_code', None)
-                        if exit_code and exit_code != 0:
-                            error_details.append(f"Container exit code: {exit_code}")
-                
-                if hasattr(execution, 'log_uri') and execution.log_uri:
-                    error_details.append(f"Logs available at: {execution.log_uri}")
-                
-                _get_cloud_run_logs(execution_name)
-                if error_details:
-                    error_msg += f" | {' | '.join(error_details)}"
-                
-                raise RuntimeError(f"{error_msg}. Execution: {execution_name}")
+            # Check if execution failed while still running
+            if ready_condition:
+                state = getattr(ready_condition, 'state', None)
+                if _is_execution_failed(state):
+                    error_msg = getattr(ready_condition, 'message', None) or f"Failed: {getattr(ready_condition, 'reason', 'Unknown error')}"
+                    _get_cloud_run_logs(execution_name)
+                    raise RuntimeError(f"{error_msg}. Execution: {execution_name}")
             
             time.sleep(poll_interval)
                 
         except RuntimeError:
             raise
-        except Exception:
+        except Exception as e:
+            # Log the error but continue polling (might be transient)
+            if time.time() - last_log_time >= log_interval:
+                print(f"[CLOUD_RUN] Error checking execution status (will retry): {str(e)}")
+                last_log_time = time.time()
             time.sleep(poll_interval)
 
 def _get_cloud_run_connection():

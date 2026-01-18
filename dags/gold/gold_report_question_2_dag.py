@@ -12,6 +12,7 @@ from airflow.sdk import Variable
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.sdk import task, TaskGroup
 from airflow import DAG
+from airflow.datasets import Dataset
 from airflow.providers.standard.operators.empty import EmptyOperator
 import uuid
 
@@ -56,21 +57,28 @@ def generate_directory(start_date: str = None, end_date: str = None, polygon_wkt
 with DAG(
     dag_id="gold_report_question_2",
     start_date=datetime(2025, 12, 1),
+    schedule=[Dataset("gold://tables/done")],  # Wait for Gold Tables to complete
     catchup=False,
     tags=["gold", "report", "question_2", "gravity_model"],
-    description="Gold layer Question 2 report generation - Gravity Model analysis. Has to be manually triggered with parameters",
+    description="Gold layer Question 2 report generation - Gravity Model analysis. Automatically triggered when Gold Tables completes. Can also be manually triggered with parameters",
     params={
         "start": Param(
-            type="string",
+            type=["string", "null"],
+            default=None,
             description="Start date (YYYY-MM-DD)",
-            schema={"type": "string", "format": "date"}
+            schema={"type": ["string", "null"], "format": "date"}
         ),
         "end": Param(
-            type="string",
+            type=["string", "null"],
+            default=None,
             description="End date (YYYY-MM-DD)",
-            schema={"type": "string", "format": "date"}
+            schema={"type": ["string", "null"], "format": "date"}
         ),
-        "polygon": Param(type="string", description="Polygon WKT"),
+        "polygon": Param(
+            type=["string", "null"],
+            default=None,
+            description="Polygon WKT"
+        ),
     },
     default_args={
         "retries": 3,

@@ -66,7 +66,7 @@ def GOLD_typical_day_create_table(**context) -> Dict:
 
 @task
 def GOLD_typical_day_get_date_batches(
-    batch_size: int = 30,
+    batch_size: int = 2,
     **context
 ) -> List[Dict[str, Any]]:
     """
@@ -74,7 +74,7 @@ def GOLD_typical_day_get_date_batches(
     and splits them into batches.
     
     Parameters:
-    - batch_size: Number of dates per batch (default: 30). Can be passed from DAG params.
+    - batch_size: Number of dates per batch (default: 2). Can be passed from DAG params.
     
     Returns:
     - List of dictionaries with 'fechas' (list of dates) and 'batch_index' for each batch

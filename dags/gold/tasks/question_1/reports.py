@@ -5,14 +5,9 @@ This module contains tasks for generating visualizations and reports
 for typical day analysis. These run in Cloud Run for better performance.
 """
 
-import sys
-import os
 from io import BytesIO
 from airflow.sdk import task  # type: ignore
 from airflow.sdk import Variable
-
-# Add parent directory to path to import utils
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from utils.utils import get_ducklake_connection
 from utils.gcp import execute_sql_or_cloud_run

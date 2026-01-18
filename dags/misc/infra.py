@@ -21,8 +21,10 @@ def tg_infra():
     Returns:
     - SimpleNamespace with verify and bucket tasks
     """
+    from airflow.sdk import Variable
+    
     verify = PRE_verify_connections()
-    bucket = PRE_s3_bucket()
+    bucket = PRE_s3_bucket(bucket_name=Variable.get('RUSTFS_BUCKET', default='mitma'))
     
     # Verify connections first, then ensure bucket exists
     verify >> bucket

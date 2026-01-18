@@ -36,7 +36,7 @@ def main():
                 df_result = result.fetchdf()
                 print(f"[CLOUD_RUN_JOB] Query executed successfully, captured {len(df_result)} rows")
             except Exception:
-                # Si no se puede obtener DataFrame (CREATE TABLE, etc.), está bien
+                # Por si no hay dataframe a capturar significa que la query no devuelve datos (CREATE TABLE, etc.)
                 print(f"[CLOUD_RUN_JOB] SQL query executed successfully")
             
         except Exception as query_error:

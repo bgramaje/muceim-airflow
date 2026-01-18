@@ -10,6 +10,7 @@ better performance.
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.datasets import Dataset
 from airflow.models import Param
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.sdk import TaskGroup
@@ -25,14 +26,15 @@ from gold.tasks import (
 with DAG(
     dag_id="gold_tables",
     start_date=datetime(2025, 12, 1),
+    schedule=[Dataset("silver://done")],  # Wait for Silver to complete
     catchup=False,
     tags=["gold", "create-tables"],
-    description="Gold layer tables creation - Uses incremental processing to only process new dates",
+    description="Gold layer tables creation - Automatically triggered when Silver completes. Uses incremental processing to only process new dates",
     params={
         "batch_size": Param(
             type="integer",
-            default=30,
-            description="Número de fechas a procesar por batch en gold_typical_day_od_hourly (default: 30)"
+            default=2,
+            description="Número de fechas a procesar por batch en gold_typical_day_od_hourly (default: 2)"
         ),
     },
     default_args={
@@ -43,7 +45,12 @@ with DAG(
 ) as dag:
     
     start = EmptyOperator(task_id="start")
-    done = EmptyOperator(task_id="done")
+    
+    gold_tables_asset = Dataset("gold://tables/done")
+    done = EmptyOperator(
+        task_id="done",
+        outlets=[gold_tables_asset]  # Publish dataset when Gold Tables completes
+    )
 
     with TaskGroup(group_id="typical_day_batches") as typ_day_group:
         typ_day_create_table = GOLD_typical_day_create_table.override(

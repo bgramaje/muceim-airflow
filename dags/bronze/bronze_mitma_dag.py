@@ -1,6 +1,6 @@
 """
 DAG for MITMA Bronze layer data ingestion.
-Orchestrates MITMA OD, People Day, Overnights, and Zonification data loading.
+Orchestrates MITMA OD and Zonification data loading.
 """
 
 from datetime import datetime, timedelta
@@ -11,26 +11,18 @@ from airflow.datasets import Dataset
 from airflow.models import Param
 from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 
 from misc.infra import tg_infra
+from misc.tasks.ensure_s3_bucket import PRE_s3_bucket
 
 from utils.utils import get_default_pool_slots
 
 from bronze.tasks.mitma import (
     BRONZE_mitma_od_urls,
-    BRONZE_mitma_od_filter_urls,
-    BRONZE_mitma_od_create_partitioned_table,
+    BRONZE_mitma_od_create_table,
     BRONZE_mitma_od_download_batch,
     BRONZE_mitma_od_process_batch,
-    BRONZE_mitma_od_cleanup_batch,
-    BRONZE_mitma_people_day_urls,
-    BRONZE_mitma_people_day_create_table,
-    BRONZE_mitma_people_day_filter_urls,
-    BRONZE_mitma_people_day_insert,
-    BRONZE_mitma_overnight_stay_urls,
-    BRONZE_mitma_overnight_stay_create_table,
-    BRONZE_mitma_overnight_stay_filter_urls,
-    BRONZE_mitma_overnight_stay_insert,
     BRONZE_mitma_zonification_urls,
     BRONZE_mitma_zonification,
     BRONZE_mitma_ine_relations,
@@ -53,26 +45,19 @@ def create_tg_od(zone_type: str):
             end_date="{{ params.end }}",
         )
 
-        od_filtered_urls = BRONZE_mitma_od_filter_urls.override(
-            task_id="od_filter_urls",
-        )(
-            urls=od_urls,
-            zone_type=zone_type,
-        )
-
         @task.branch
-        def check_urls_to_process(filtered_urls: list[str], **context):
+        def check_urls_to_process(urls: list[str], **context):
             """Check if there are URLs to process."""
-            if len(filtered_urls) > 0:
+            if len(urls) > 0:
                 return f"{group_id}.od_create_table"
             else:
                 return f"{group_id}.od_skipped"
 
         branch_task = check_urls_to_process.override(
             task_id="check_urls"
-        )(od_filtered_urls)
+        )(od_urls)
 
-        od_create_table = BRONZE_mitma_od_create_partitioned_table.override(
+        od_create_table = BRONZE_mitma_od_create_table.override(
             task_id="od_create_table",
         )(
             urls=od_urls,
@@ -80,11 +65,11 @@ def create_tg_od(zone_type: str):
         )
         
         @task
-        def create_batches(filtered_urls: list[str], **context):
+        def create_batches(urls: list[str], **context):
             """Create batches from filtered URLs using batch_size parameter."""
-            batch_size = context['params'].get('batch_size', 10)
+            batch_size = context['params'].get('batch_size', 2)
             from bronze.utils import create_url_batches
-            batches = create_url_batches(filtered_urls, batch_size)
+            batches = create_url_batches(urls, batch_size)
             return [
                 {'batch_index': i, 'urls': batch}
                 for i, batch in enumerate(batches)
@@ -92,7 +77,7 @@ def create_tg_od(zone_type: str):
         
         od_batches = create_batches.override(
             task_id="od_create_batches"
-        )(od_filtered_urls)
+        )(od_urls)
         od_download = (
             BRONZE_mitma_od_download_batch.override(
                 task_id="od_download_to_rustfs",
@@ -110,174 +95,22 @@ def create_tg_od(zone_type: str):
             .partial(zone_type=zone_type)
             .expand(download_result=od_download)
         )
-        
-        od_cleanup = (
-            BRONZE_mitma_od_cleanup_batch.override(
-                task_id="od_cleanup_rustfs",
-                pool="default_pool",
-            )
-            .expand(download_result=od_process)
-        )
 
         od_skipped = EmptyOperator(
             task_id="od_skipped"
         )
 
-        od_urls >> od_filtered_urls >> branch_task
+        od_urls >> branch_task
 
-        branch_task >> od_create_table >> od_batches >> od_download >> od_process >> od_cleanup
+        branch_task >> od_create_table >> od_batches >> od_download >> od_process
         branch_task >> od_skipped
         
         return SimpleNamespace(
             start=od_urls,
-            insert=[od_cleanup, od_skipped],
+            insert=[od_process, od_skipped],
         )
     
     return tg_od(zone_type=zone_type)
-
-
-def create_tg_people_day(zone_type: str):
-    """Factory function to create People Day TaskGroup with dynamic group_id."""
-    group_id = f"people_day_{zone_type}"
-    
-    @task_group(group_id=group_id)
-    def tg_people_day(zone_type: str):
-        """TaskGroup for People Day data ingestion."""
-        people_urls = BRONZE_mitma_people_day_urls.override(
-            task_id="people_urls",
-        )(
-            zone_type=zone_type,
-            start_date="{{ params.start }}",
-            end_date="{{ params.end }}",
-        )
-
-        people_filtered_urls = BRONZE_mitma_people_day_filter_urls.override(
-            task_id="people_filter_urls",
-        )(
-            urls=people_urls,
-            zone_type=zone_type,
-        )
-        
-        @task.branch
-        def check_people_day_urls(filtered_urls: list[str], **context):
-            """Check if people_day is enabled and has URLs to process."""
-            enabled = context['params'].get('enable_people_day', False)
-            if not enabled:
-                return f"{group_id}.people_skipped"
-            if len(filtered_urls) > 0:
-                return f"{group_id}.people_create"
-            else:
-                return f"{group_id}.people_skipped"
-
-        branch_task = check_people_day_urls.override(
-            task_id="check_urls"
-        )(people_filtered_urls)
-
-        people_create = BRONZE_mitma_people_day_create_table.override(
-            task_id="people_create",
-        )(
-            urls=people_urls,
-            zone_type=zone_type,
-        )
-        
-        people_insert = (
-            BRONZE_mitma_people_day_insert.override(
-                task_id="people_insert",
-                pool="default_pool", 
-                max_active_tis_per_dag=1,
-                pool_slots=default_pool_slots,
-            )
-            .partial(zone_type=zone_type)
-            .expand(url=people_filtered_urls)
-        )
-        
-        people_skipped = EmptyOperator(
-            task_id="people_skipped"
-        )
-
-        people_urls >> people_filtered_urls >> branch_task
-
-        branch_task >> people_create >> people_insert
-        branch_task >> people_skipped
-        
-        return SimpleNamespace(
-            start=people_urls,
-            insert=[people_insert, people_skipped],
-        )
-    
-    return tg_people_day(zone_type=zone_type)
-
-
-def create_tg_overnight(zone_type: str):
-    """Factory function to create Overnight Stay TaskGroup with dynamic group_id."""
-    group_id = f"overnight_{zone_type}"
-    
-    @task_group(group_id=group_id)
-    def tg_overnight(zone_type: str):
-        """TaskGroup for Overnight Stay data ingestion."""
-        overnight_urls = BRONZE_mitma_overnight_stay_urls.override(
-            task_id="overnight_urls",
-        )(
-            zone_type=zone_type,
-            start_date="{{ params.start }}",
-            end_date="{{ params.end }}",
-        )
-
-        overnight_filtered_urls = BRONZE_mitma_overnight_stay_filter_urls.override(
-            task_id="overnight_filter_urls",
-        )(
-            urls=overnight_urls,
-            zone_type=zone_type,
-        )
-
-        @task.branch
-        def check_overnight_urls(filtered_urls: list[str], **context):
-            """Check if overnight is enabled and has URLs to process."""
-            enabled = context['params'].get('enable_overnight', False)
-            if not enabled:
-                return f"{group_id}.overnight_skipped"
-            if len(filtered_urls) > 0:
-                return f"{group_id}.overnight_create"
-            else:
-                return f"{group_id}.overnight_skipped"
-        
-        branch_task = check_overnight_urls.override(
-            task_id="check_urls"
-        )(overnight_filtered_urls)
-
-        overnight_create = BRONZE_mitma_overnight_stay_create_table.override(
-            task_id="overnight_create",
-        )(
-            urls=overnight_urls,
-            zone_type=zone_type,
-        )
-        
-        overnight_insert = (
-            BRONZE_mitma_overnight_stay_insert.override(
-                task_id="overnight_insert",
-                pool="default_pool", 
-                max_active_tis_per_dag=1,
-                pool_slots=default_pool_slots, 
-            )
-            .partial(zone_type=zone_type)
-            .expand(url=overnight_filtered_urls)
-        )
-        
-        overnight_skipped = EmptyOperator(
-            task_id="overnight_skipped"
-        )
-
-        overnight_urls >> overnight_filtered_urls >> branch_task
-
-        branch_task >> overnight_create >> overnight_insert
-        branch_task >> overnight_skipped
-        
-        return SimpleNamespace(
-            start=overnight_urls,
-            insert=[overnight_insert, overnight_skipped],
-        )
-    
-    return tg_overnight(zone_type=zone_type)
 
 
 def create_tg_zonification(zone_type: str):
@@ -354,11 +187,9 @@ with DAG(
     params={
         "start": Param(type="string", schema={"type": "string", "format": "date"}, description="Start date for MITMA data loading"),
         "end": Param(type="string", schema={"type": "string", "format": "date"}, description="End date for MITMA data loading"),
-        "batch_size": Param(type="integer", default=10, description="Number of URLs per batch for processing"),
-        "enable_people_day": Param(type="boolean", default=False, description="Enable People Day data insertion"),
-        "enable_overnight": Param(type="boolean", default=False, description="Enable Overnight Stay data insertion"),
+        "batch_size": Param(type="integer", default=2, description="Number of URLs per batch for processing"),
     },
-    description="MITMA Bronze layer data ingestion (OD, People Day, Overnights, Zonification, INE Relations)",
+    description="MITMA Bronze layer data ingestion (OD, Zonification, INE Relations)",
     default_args={
         "retries": 3,
         "retry_delay": timedelta(seconds=30),
@@ -366,18 +197,26 @@ with DAG(
     max_active_tasks=4,  # Máximo de tareas concurrentes en el DAG (permite paralelismo general)
     max_active_runs=1,    # Solo 1 ejecución del DAG a la vez
 ) as dag:
+    from airflow.sdk import Variable
+    
     infra = tg_infra()
+    
+    # Ensure RAW bucket exists
+    raw_bucket = PRE_s3_bucket.override(task_id="ensure_raw_bucket")(
+        bucket_name=Variable.get('RAW_BUCKET', default='mitma-raw')
+    )
+    
     zone_type = "municipios"
 
     od_group = create_tg_od(zone_type=zone_type)
-    people_day_group = create_tg_people_day(zone_type=zone_type)
-    overnight_group = create_tg_overnight(zone_type=zone_type)
     zonif_group = create_tg_zonification(zone_type=zone_type)
     ine_relations_group = create_tg_ine_relations()
     
-    infra.bucket >> [od_group.start, people_day_group.start, overnight_group.start, zonif_group.start, ine_relations_group.start]
+    infra.bucket >> [od_group.start, zonif_group.start, ine_relations_group.start]
+    raw_bucket >> [od_group.start, zonif_group.start, ine_relations_group.start]
     
     bronze_mitma_asset = Dataset("bronze://mitma/done")
+    bronze_mitma_checker_asset = Dataset("bronze://mitma/checker_done")  # Dataset específico cuando viene del checker
     
     done = EmptyOperator(
         task_id="done",
@@ -385,12 +224,41 @@ with DAG(
         trigger_rule="none_failed"  # Wait for tasks that execute (skipped ones are ignored)
     )
     
-    people_day_group.insert[0] >> done  # actual insert (if enabled)
-    people_day_group.insert[1] >> done  # skipped insert (if disabled)
-    overnight_group.insert[0] >> done   # actual insert (if enabled)
-    overnight_group.insert[1] >> done   # skipped insert (if disabled)
-    od_group.insert[0] >> done          # actual insert (if URLs exist)
-    od_group.insert[1] >> done          # skipped insert (if no URLs)
-    zonif_group.insert[0] >> done       # zonification if URLs exist
-    zonif_group.insert[1] >> done       # zonification skipped if no URLs
-    ine_relations_group.end >> done     # ine relations (single local task)
+    # Task que triggera el silver_dag si viene del checker
+    @task.branch
+    def check_if_triggered_by_checker(**context):
+        """Verifica si el DAG fue triggerado por el checker."""
+        triggered_by_checker = context.get('params', {}).get('triggered_by_checker', False)
+        if triggered_by_checker:
+            print("[TASK] DAG triggered by checker. Will trigger silver_dag with specific params.")
+            return "trigger_silver_from_checker"
+        else:
+            print("[TASK] DAG not triggered by checker. Normal flow.")
+            return "skip_trigger_silver"
+    
+    check_trigger = check_if_triggered_by_checker.override(task_id="check_checker_trigger")()
+    
+    # Trigger del silver_dag cuando viene del checker
+    trigger_silver = TriggerDagRunOperator(
+        task_id="trigger_silver_from_checker",
+        trigger_dag_id="silver",
+        conf={
+            "start": "{{ params.start }}",
+            "end": "{{ params.end }}",
+            "process_zonification": False,
+            "process_ine": False,
+        },
+        wait_for_completion=False,
+    )
+    
+    skip_trigger = EmptyOperator(task_id="skip_trigger_silver")
+    
+    od_group.insert[0] >> done          
+    od_group.insert[1] >> done          
+    zonif_group.insert[0] >> done      
+    zonif_group.insert[1] >> done       
+    ine_relations_group.end >> done     
+    
+    done >> check_trigger
+    check_trigger >> trigger_silver
+    check_trigger >> skip_trigger

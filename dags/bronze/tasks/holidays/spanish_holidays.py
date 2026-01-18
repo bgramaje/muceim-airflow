@@ -18,11 +18,8 @@ def BRONZE_load_spanish_holidays(year: int = 2023):
     """
     from utils.utils import get_ducklake_connection
 
-    print("[TASK] Loading Spanish public holidays into DuckDB table")
-
     con = get_ducklake_connection()
 
-    # Create TEMP table with holidays
     con.execute(f"""
         CREATE OR REPLACE TABLE bronze_spanish_holidays AS
         SELECT 
@@ -35,13 +32,10 @@ def BRONZE_load_spanish_holidays(year: int = 2023):
         WHERE nationwide = true;
     """
     )
-    df = con.execute("SELECT COUNT(*) AS count FROM bronze_spanish_holidays").fetchdf()
 
-    print(f"[TASK] Loaded bronze_spanish_holidays table with {df.iloc[0]['count']:,} records")
     print(con.execute("SELECT * FROM bronze_spanish_holidays LIMIT 10").fetchdf())
 
     return {
         "status": "success",
-        "records": int(df.iloc[0]["count"]),
         "table": "bronze_spanish_holidays"
     }

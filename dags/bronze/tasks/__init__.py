@@ -2,17 +2,7 @@
 Bronze Layer Airflow Tasks Package
 """
 
-from .mitma.mitma_od import (
-    BRONZE_mitma_od_urls,
-)
-from .mitma.mitma_people_day import (
-    BRONZE_mitma_people_day_urls,
-    BRONZE_mitma_people_day_insert,
-)
-from .mitma.mitma_overnights import (
-    BRONZE_mitma_overnight_stay_urls,
-    BRONZE_mitma_overnight_stay_insert,
-)
+from .mitma.mitma_od import BRONZE_mitma_od_urls
 from .mitma.mitma_zonification import (
     BRONZE_mitma_zonification_urls,
     BRONZE_mitma_zonification,
@@ -46,10 +36,6 @@ from .holidays.spanish_holidays import BRONZE_load_spanish_holidays
 
 __all__ = [
     "BRONZE_mitma_od_urls",
-    "BRONZE_mitma_people_day_urls",
-    "BRONZE_mitma_people_day_insert",
-    "BRONZE_mitma_overnight_stay_urls",
-    "BRONZE_mitma_overnight_stay_insert",
     "BRONZE_mitma_zonification_urls",
     "BRONZE_mitma_zonification",
     "BRONZE_ine_municipios_urls",

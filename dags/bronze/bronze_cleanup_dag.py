@@ -21,11 +21,12 @@ from airflow.models import Param
 from airflow.sdk import Variable
 from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
+from click.core import F
 
 SOURCE_TABLE_PATTERNS = {
     'mitma': {
         'pattern': 'bronze_mitma%',
-        'datasets': ['all', 'od', 'people_day', 'overnight_stay', 'zonification', 'distances'],
+        'datasets': ['all', 'od', 'zonification', 'distances'],
         'has_zone_types': True,
         'zone_types': ['all', 'municipios', 'distritos', 'gau'],
     },
@@ -57,10 +58,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     
     source_config = SOURCE_TABLE_PATTERNS.get(source, SOURCE_TABLE_PATTERNS['mitma'])
     table_pattern = source_config['pattern']
-    
-    print(f"[CLEANUP] Source: {source}")
-    print(f"[CLEANUP] Listing files in bucket '{rustfs_bucket}' for tables matching '{table_pattern}'")
-    
+
     con = get_ducklake_connection()
     
     tables_query = f"""
@@ -73,14 +71,13 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     tables_df = con.execute(tables_query).fetchdf()
     table_names = tables_df['table_name'].tolist()
     
-    # Apply dataset filter if needed
     if dataset != 'all':
         table_names = [t for t in table_names if f'_{dataset}' in t]
     
     if source_config.get('has_zone_types', False) and zone_type != 'all':
         table_names = [t for t in table_names if t.endswith(f'_{zone_type}')]
     
-    print(f"[CLEANUP] Found {len(table_names)} matching tables: {table_names}")
+    print(f"Found {len(table_names)} matching tables: {table_names}")
     
     if not table_names:
         return {
@@ -93,29 +90,6 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
         }
     
     s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
-    
-    try:
-        if not s3_hook.check_for_bucket(rustfs_bucket):
-            print(f"[CLEANUP] Bucket '{rustfs_bucket}' does not exist")
-            return {
-                'bucket': rustfs_bucket,
-                'files': [],
-                'total_count': 0,
-                'total_size_mb': 0,
-                'tables': table_names,
-                'source': source
-            }
-    except Exception as e:
-        print(f"[CLEANUP] Error checking bucket: {e}")
-        return {
-            'bucket': rustfs_bucket,
-            'files': [],
-            'total_count': 0,
-            'total_size_mb': 0,
-            'tables': table_names,
-            'source': source,
-            'error': str(e)
-        }
     
     s3_client = s3_hook.get_conn()
     paginator = s3_client.get_paginator('list_objects_v2')
@@ -159,10 +133,10 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
             files_by_table[table_name] = len(table_files)
             
         except Exception as e:
-            print(f"[CLEANUP] Error listing files for table '{table_name}': {e}")
+            print(f"Error listing files for table '{table_name}': {e}")
             files_by_table[table_name] = 0
     
-    print(f"[CLEANUP] Found {len(all_files)} files ({round(total_size / (1024 * 1024), 2)} MB) in {len(table_names)} tables")
+    print(f"Found {len(all_files)} files ({round(total_size / (1024 * 1024), 2)} MB) in {len(table_names)} tables")
     
     summary = {}
     for f in all_files:
@@ -189,7 +163,7 @@ def delete_rustfs_files(
     file_info: Dict[str, Any] = None
 ) -> Dict[str, Any]:
     """Deletes files from RustFS bucket. Returns dict with deletion status and counts."""
-    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+    from dags.bronze.utils import delete_batch_from_rustfs
     
     rustfs_bucket = Variable.get('RUSTFS_BUCKET', default='mitma')
     
@@ -211,43 +185,20 @@ def delete_rustfs_files(
             'source': source
         }
     
-    print(f"[CLEANUP] Deleting {total_count} files ({total_size_mb} MB) for source '{source}'")
+    print(f"Deleting {total_count} files ({total_size_mb} MB) for source '{source}'")
     
-    s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
-    s3_client = s3_hook.get_conn()
+    s3_paths = [f"s3://{rustfs_bucket}/{f['key']}" for f in files]
     
-    deleted = 0
-    errors = []
+    results = delete_batch_from_rustfs(s3_paths, rustfs_bucket)
     
-    batch_size = 1000
-    for i in range(0, len(files), batch_size):
-        batch = files[i:i + batch_size]
-        
-        try:
-            delete_objects = [{'Key': f['key']} for f in batch]
-            
-            response = s3_client.delete_objects(
-                Bucket=rustfs_bucket,
-                Delete={'Objects': delete_objects}
-            )
-            
-            deleted += len(response.get('Deleted', []))
-            
-            if 'Errors' in response:
-                for err in response['Errors']:
-                    errors.append({
-                        'key': err['Key'],
-                        'error': err['Message']
-                    })
-            
-        except Exception as e:
-            print(f"[CLEANUP] Error deleting batch: {e}")
-            errors.append({'batch': i // batch_size, 'error': str(e)})
+    deleted = sum(1 for success in results.values() if success)
+    errors = [
+        {'s3_path': path, 'error': 'deletion_failed'}
+        for path, success in results.items()
+        if not success
+    ]
     
-    print(f"[CLEANUP] Deleted {deleted}/{total_count} files")
-    
-    if errors:
-        print(f"[CLEANUP] {len(errors)} errors occurred")
+    print(f"Deleted {deleted}/{total_count} files")
     
     return {
         'status': 'success' if not errors else 'partial',
@@ -271,9 +222,6 @@ def list_bronze_tables(**context) -> Dict[str, Any]:
     source_config = SOURCE_TABLE_PATTERNS.get(source, SOURCE_TABLE_PATTERNS['mitma'])
     table_pattern = source_config['pattern']
     
-    print(f"[CLEANUP] Source: {source}")
-    print(f"[CLEANUP] Listing tables matching '{table_pattern}'")
-    
     con = get_ducklake_connection()
     
     tables_query = f"""
@@ -292,7 +240,7 @@ def list_bronze_tables(**context) -> Dict[str, Any]:
     if source_config.get('has_zone_types', False) and zone_type != 'all':
         table_names = [t for t in table_names if t.endswith(f'_{zone_type}')]
     
-    print(f"[CLEANUP] Found {len(table_names)} matching tables: {table_names}")
+    print(f"Found {len(table_names)} matching tables: {table_names}")
     
     return {
         'tables': table_names,
@@ -327,14 +275,14 @@ def drop_bronze_tables(
     drop_statements = [f"DROP TABLE IF EXISTS {table_name};" for table_name in table_names]
     sql_query = "\n".join(drop_statements)
     
-    print(f"[CLEANUP] ⚠️  DROPPING {len(table_names)} {source} tables (complete deletion)")
+    print(f"Dropping {len(table_names)} {source} tables (complete deletion)")
     for t in table_names:
-        print(f"[CLEANUP]   - {t}")
+        print(f" - {t}")
     
     try:
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         
-        print(f"[CLEANUP] ✅ Dropped {len(table_names)} tables")
+        print(f"Dropped {len(table_names)} tables")
         
         return {
             'status': 'success',
@@ -346,7 +294,7 @@ def drop_bronze_tables(
         }
         
     except Exception as e:
-        print(f"[CLEANUP] ❌ Error dropping tables: {e}")
+        print(f"Error dropping tables: {e}")
         return {
             'status': 'error',
             'dropped': 0,
@@ -380,8 +328,8 @@ with DAG(
         "dataset": Param(
             type="string",
             default="all",
-            enum=["all", "od", "people_day", "overnight_stay", "zonification", "distances", "empresas", "poblacion", "renta", "municipios"],
-            description="Which dataset to clean. 'all' cleans everything for the selected source. MITMA: od, people_day, overnight_stay, zonification, distances. INE: empresas, poblacion, renta, municipios"
+            enum=["all", "od", "zonification", "distances", "empresas", "poblacion", "renta", "municipios"],
+            description="Which dataset to clean. 'all' cleans everything for the selected source. MITMA: od, zonification, distances. INE: empresas, poblacion, renta, municipios"
         ),
         "zone_type": Param(
             type="string",
