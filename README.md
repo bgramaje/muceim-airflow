@@ -35,6 +35,27 @@ graph TB
 - Flexible schema (`all_varchar = true`)
 - Audit metadata (`loaded_at`, `source_file`/`source_url`)
 - No business transformations
+- **Zone Types**: MITMA data supports multiple zone types:
+  - `municipios`: Municipality-level data
+  - `distritos`: District-level data
+  - `gau`: GAU (Geographic Analysis Unit) level data
+- **Batch Processing**: OD data is processed in configurable batches for parallel processing
+- **Idempotent Checks**: Automatically skips already-processed files/dates based on source tracking
+
+#### Bronze Tables
+**MITMA Tables:**
+- `bronze_mitma_od_{zone_type}`: Origin-destination matrices (partitioned by date)
+- `bronze_mitma_{zone_type}`: Zonification data (geographic boundaries, names, population)
+- `bronze_mitma_ine_relations`: Mapping between MITMA and INE identifiers
+
+**INE Tables:**
+- `bronze_ine_municipios`: Municipality reference data
+- `bronze_ine_empresas_municipio`: Company data by municipality
+- `bronze_ine_poblacion_municipio`: Population data by municipality
+- `bronze_ine_renta_municipio`: Income data by municipality
+
+**Holidays Tables:**
+- `bronze_spanish_holidays`: Spanish public holidays
 
 ### Silver Layer (Cleaned & Enriched)
 - Correct data types (TIMESTAMP, DOUBLE, etc.)
@@ -62,9 +83,15 @@ graph TB
 ## DAGs
 
 ### Bronze DAGs
-- `bronze_mitma`: MITMA data ingestion (OD, People Day, Overnights, Zonification)
+- `bronze_mitma`: MITMA data ingestion (OD matrices, Zonification, MITMA-INE Relations)
+  - Supports zone types: `municipios`, `distritos`, `gau`
+  - Batch processing with configurable batch size
+  - Processes OD data by date range with idempotent checks
 - `bronze_ine`: INE data ingestion (Municipalities, Companies, Population, Income)
 - `bronze_holidays`: Spanish holidays ingestion
+- `bronze_mitma_checker`: Daily scheduled DAG that checks for new MITMA OD URLs and automatically triggers `bronze_mitma` if data is available
+  - ⚠️ **Current Limitation**: Currently only checks for the current execution date. The ideal implementation would query the last ingested date in Bronze, create a date range from that point to today, and process all missing dates. However, due to limited resources in the RustFS deployment, the current implementation processes only the current day. This gap-filling functionality should be implemented as a next step.
+- `bronze_cleanup`: Maintenance DAG for cleaning Bronze layer data (RustFS files and/or tables)
 
 ### Silver DAG
 - `silver`: Dataset-triggered transformations
@@ -74,7 +101,7 @@ graph TB
   - INE data consolidation
 
 ### Gold DAGs
-- `gold_tables_dag`: Creates gold layer tables
+- `gold_tables_dag`: Creates gold layer tables. Automatically triggered via Airflow Datasets when Silver layer completes.
 - `gold_report_question_1_dag`: Typical day analysis
 - `gold_report_question_2_dag`: Gravity model analysis
 - `gold_report_question_3_dag`: Functional type analysis
@@ -94,7 +121,10 @@ graph LR
 
 ## Key Features
 
-- **Idempotent Processing**: Tracks processed files/dates to avoid duplicates
+- **Idempotent Processing**: All queries and operations are idempotent. The system tracks processed files/dates to avoid duplicates, and can be safely re-run without side effects. This includes:
+  - Bronze ingestion checks for existing `source_file`/`source_url` before processing
+  - Silver transformations use `INSERT OR REPLACE` and `MERGE` statements
+  - Gold layer operations are designed to be re-runnable without data corruption
 - **Batch Processing**: Parallel processing with dynamic task mapping
 - **Cloud Run Integration**: Heavy operations run on GCP Cloud Run Jobs
 - **Partitioned Tables**: Temporal partitioning for query optimization
@@ -109,6 +139,7 @@ graph LR
 
 ### Airflow Variables
 - `RUSTFS_BUCKET`: S3 bucket name (default: "mitma")
+- `RAW_BUCKET`: S3 bucket name for raw data storage (default: "mitma-raw")
 - `GCP_PROJECT_ID`: GCP project ID
 - `GCP_CLOUD_RUN_REGION`: Cloud Run region
 - `GCP_CLOUD_RUN_JOB_NAME`: Cloud Run job name for ingestion
@@ -118,9 +149,9 @@ graph LR
 
 ### Trigger Bronze Ingestion
 ```bash
-# MITMA data for date range
+# MITMA data for date range (with optional batch size)
 airflow dags trigger bronze_mitma \
-  --conf '{"start": "2023-03-01", "end": "2023-03-31"}'
+  --conf '{"start": "2023-03-01", "end": "2023-03-31", "batch_size": 2}'
 
 # INE data for year
 airflow dags trigger bronze_ine \
@@ -129,14 +160,28 @@ airflow dags trigger bronze_ine \
 # Holidays for year
 airflow dags trigger bronze_holidays \
   --conf '{"year": 2023}'
+
+# Cleanup Bronze layer data (use with caution!)
+airflow dags trigger bronze_cleanup \
+  --conf '{
+    "source": "mitma",
+    "cleanup_rustfs": true,
+    "cleanup_tables": false,
+    "dataset": "all",
+    "zone_type": "all"
+  }'
 ```
 
+**Note**: 
+- `bronze_mitma_checker` runs automatically daily at 00:00 and will trigger `bronze_mitma` if new data is available
+- When `bronze_mitma` is triggered by the checker, it automatically triggers `silver` DAG upon completion
+
 ### Silver Transformation
-Automatically triggered when all Bronze DAGs complete (via Airflow Datasets).
+Automatically triggered when all Bronze DAGs complete (via Airflow Datasets). Upon completion, automatically triggers `gold_tables_dag` via Airflow Datasets.
 
 ### Gold Analytics
+`gold_tables_dag` is automatically triggered when Silver layer completes. For report DAGs, trigger manually:
 ```bash
-airflow dags trigger gold_tables_dag
 airflow dags trigger gold_report_question_2_dag \
   --conf '{"start_date": "2023-03-01", "end_date": "2023-03-31"}'
 ```
@@ -146,6 +191,16 @@ airflow dags trigger gold_report_question_2_dag \
 ```
 dags/
 ├── bronze/          # Bronze layer DAGs and tasks
+│   ├── tasks/       # Task modules organized by source
+│   │   ├── mitma/   # MITMA tasks (OD, Zonification, INE Relations)
+│   │   ├── ine/     # INE tasks (Municipalities, Companies, Population, Income)
+│   │   └── holidays/# Holidays tasks
+│   ├── bronze_mitma_dag.py
+│   ├── bronze_ine_dag.py
+│   ├── bronze_holidays_dag.py
+│   ├── bronze_mitma_checker_dag.py
+│   ├── bronze_cleanup_dag.py
+│   └── utils.py     # Bronze layer utilities
 ├── silver/          # Silver layer DAGs and tasks
 ├── gold/            # Gold layer DAGs and tasks
 ├── misc/            # Infrastructure tasks
@@ -155,11 +210,6 @@ gcp/
 ├── ingestor_cloud/   # Cloud Run job for CSV ingestion
 └── executor_cloud/   # Cloud Run job for SQL execution
 ```
-
-## Unused Functions
-
-The following functions are defined but not currently used:
-- `ducklake_connection()`: Context manager for DuckLake connection (use `get_ducklake_connection()` instead)
 
 ## License
 
