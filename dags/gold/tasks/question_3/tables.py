@@ -13,6 +13,7 @@ from sklearn.cluster import KMeans
 from airflow.sdk import task  # type: ignore
 
 from utils.gcp import execute_sql_or_cloud_run
+from utils.logger import get_logger
 
 FUNCTIONAL_TYPE_SQL = """
     WITH trips_out AS (
@@ -72,7 +73,8 @@ def _post_process_functional_type(df, con, result_dict):
     from sklearn.preprocessing import StandardScaler
     from sklearn.cluster import KMeans
     
-    print("[TASK] Processing functional type classification with KMeans clustering")
+    logger = get_logger(__name__)
+    logger.info("Processing functional type classification with KMeans clustering")
 
     # Si no tenemos DataFrame, no podemos continuar
     if df is None:
@@ -130,7 +132,7 @@ def _post_process_functional_type(df, con, result_dict):
         ) AS t(zone_id, functional_type)
     """)
 
-    print(f"[TASK] Created gold_zone_functional_type")
+    logger.info("Created gold_zone_functional_type")
 
     return {
         "table": "gold_zone_functional_type",
@@ -148,7 +150,8 @@ def GOLD_functional_type(**context):
     Returns:
     - Dict with task status and info
     """
-    print("[TASK] Building gold_zone_functional_type table (Business Question 3)")
+    logger = get_logger(__name__, context)
+    logger.info("Building gold_zone_functional_type table (Business Question 3)")
 
     # Execute SQL query with post-processing function
     # The post_process_func will run in Cloud Run (if available) with the DataFrame
@@ -158,7 +161,7 @@ def GOLD_functional_type(**context):
         **context
     )
 
-    print(f"[TASK] Execution: {result.get('execution_name', 'unknown')}")
+    logger.info(f"Execution: {result.get('execution_name', 'unknown')}")
 
     return {
         "status": "success",

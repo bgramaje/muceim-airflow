@@ -17,6 +17,7 @@ from misc.infra import tg_infra
 from misc.tasks.ensure_s3_bucket import PRE_s3_bucket
 
 from utils.utils import get_default_pool_slots
+from utils.logger import get_logger
 
 from bronze.tasks.mitma import (
     BRONZE_mitma_od_urls,
@@ -228,12 +229,13 @@ with DAG(
     @task.branch
     def check_if_triggered_by_checker(**context):
         """Verifica si el DAG fue triggerado por el checker."""
+        logger = get_logger(__name__, context)
         triggered_by_checker = context.get('params', {}).get('triggered_by_checker', False)
         if triggered_by_checker:
-            print("[TASK] DAG triggered by checker. Will trigger silver_dag with specific params.")
+            logger.info("DAG triggered by checker. Will trigger silver_dag with specific params.")
             return "trigger_silver_from_checker"
         else:
-            print("[TASK] DAG not triggered by checker. Normal flow.")
+            logger.info("DAG not triggered by checker. Normal flow.")
             return "skip_trigger_silver"
     
     check_trigger = check_if_triggered_by_checker.override(task_id="check_checker_trigger")()

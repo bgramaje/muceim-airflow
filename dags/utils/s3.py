@@ -2,6 +2,8 @@
 S3 utilities for uploading files to RustFS using Airflow connection.
 """
 
+from utils.logger import get_logger
+
 
 def upload_to_s3_rustfs(
     content: bytes | str,
@@ -30,6 +32,8 @@ def upload_to_s3_rustfs(
     """
     import os
     
+    logger = get_logger(__name__)
+    
     if isinstance(content, str):
         content_bytes = content.encode('utf-8')
     else:
@@ -48,11 +52,11 @@ def upload_to_s3_rustfs(
         )
         
         s3_path = f"s3://{bucket_name}/{s3_key}"
-        print(f"[S3_UPLOAD] Uploaded to {s3_path} using S3Hook")
+        logger.info(f"Uploaded to {s3_path} using S3Hook")
         return s3_path
         
     except (ImportError, Exception) as e:
-        print(f"Executing fallback to boto3 using environment variables (Cloud Run)")
+        logger.info("Executing fallback to boto3 using environment variables (Cloud Run)")
         import boto3
         from botocore.config import Config
         
@@ -61,7 +65,7 @@ def upload_to_s3_rustfs(
         rustfs_password = os.environ.get("RUSTFS_PASSWORD")
         rustfs_ssl = os.environ.get("RUSTFS_SSL", "false").lower() == "true"
         
-        print(s3_endpoint, rustfs_user, bucket_name)
+        logger.debug(f"S3 endpoint: {s3_endpoint}, user: {rustfs_user}, bucket: {bucket_name}")
         
         if not rustfs_user or not rustfs_password:
             raise RuntimeError(
@@ -89,5 +93,5 @@ def upload_to_s3_rustfs(
         )
         
         s3_path = f"s3://{bucket_name}/{s3_key}"
-        print(f"[S3_UPLOAD] Uploaded to {s3_path} using boto3 (Cloud Run)")
+        logger.info(f"Uploaded to {s3_path} using boto3 (Cloud Run)")
         return s3_path

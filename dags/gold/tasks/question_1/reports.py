@@ -8,6 +8,7 @@ for typical day analysis. These run in Cloud Run for better performance.
 from airflow.sdk import task  # type: ignore
 
 from utils.gcp import execute_sql_or_cloud_run
+from utils.logger import get_logger
 
 
 def _post_process_typical_day_map(df, con, result_dict):
@@ -24,10 +25,11 @@ def _post_process_typical_day_map(df, con, result_dict):
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
     save_id = os.environ.get('REPORT_SAVE_ID')
     polygon_wkt = os.environ.get('REPORT_POLYGON_WKT')
+    logger = get_logger(__name__)
     bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
-        print("[WARNING] No data to visualize")
+        logger.warning("No data to visualize")
         return {'status': 'skipped', 'message': 'No data available'}
     
     # Process DataFrame
@@ -107,7 +109,7 @@ def _post_process_typical_day_map(df, con, result_dict):
         bucket_name=bucket_name
     )
     
-    print(f"Uploaded to {s3_path}")
+    logger.info(f"Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
 
@@ -133,7 +135,8 @@ def GOLD_generate_typical_day_map(
     Returns:
     - S3 path to the generated HTML map
     """
-    print("[TASK] Generating typical day map (Cloud Run)")
+    logger = get_logger(__name__, context)
+    logger.info("Generating typical day map (Cloud Run)")
     
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
@@ -207,11 +210,12 @@ def _post_process_top_origins(df, con, result_dict):
     from utils.s3 import upload_to_s3_rustfs
     
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
+    logger = get_logger(__name__)
     save_id = os.environ.get('REPORT_SAVE_ID')
     bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
-        print("[WARNING] No data to visualize")
+        logger.warning("No data to visualize")
         return {'status': 'skipped', 'message': 'No data available'}
     
     plt.figure(figsize=(12, 5))
@@ -239,7 +243,7 @@ def _post_process_top_origins(df, con, result_dict):
         bucket_name=bucket_name
     )
     
-    print(f"[SUCCESS] Uploaded to {s3_path}")
+    logger.info(f"Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
 
@@ -265,7 +269,8 @@ def GOLD_generate_top_origins(
     Returns:
     - S3 path to the generated PNG image
     """
-    print("[TASK] Generating typical day top origins (Cloud Run)")
+    logger = get_logger(__name__, context)
+    logger.info("Generating typical day top origins (Cloud Run)")
     
     sql_query = f"""
         INSTALL spatial; LOAD spatial;
@@ -321,11 +326,12 @@ def _post_process_hourly_distribution(df, con, result_dict):
     from utils.s3 import upload_to_s3_rustfs
     
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
+    logger = get_logger(__name__)
     save_id = os.environ.get('REPORT_SAVE_ID')
     bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
-        print("[WARNING] No data to visualize")
+        logger.warning("No data to visualize")
         return {'status': 'skipped', 'message': 'No data available'}
     
     df_hourly_distribution = df.copy()
@@ -403,7 +409,7 @@ def _post_process_hourly_distribution(df, con, result_dict):
         bucket_name=bucket_name
     )
     
-    print(f"[SUCCESS] Uploaded to {s3_path}")
+    logger.info(f"Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
 
@@ -429,7 +435,8 @@ def GOLD_generate_hourly_distribution(
     Returns:
     - S3 path to the generated HTML chart
     """
-    print("[TASK] Generating typical day hourly distribution (Cloud Run)")
+    logger = get_logger(__name__, context)
+    logger.info("Generating typical day hourly distribution (Cloud Run)")
     
     sql_query = f"""
         INSTALL spatial; LOAD spatial;

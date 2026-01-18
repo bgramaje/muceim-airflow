@@ -8,6 +8,7 @@ for functional type analysis. These run in Cloud Run for better performance.
 from airflow.sdk import task  # type: ignore
 
 from utils.gcp import execute_sql_or_cloud_run
+from utils.logger import get_logger
 
 
 def _post_process_in_out_distribution(df, con, result_dict):
@@ -21,11 +22,12 @@ def _post_process_in_out_distribution(df, con, result_dict):
     from utils.s3 import upload_to_s3_rustfs
     
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
+    logger = get_logger(__name__)
     save_id = os.environ.get('REPORT_SAVE_ID')
     bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
-        print("[WARNING] No data to visualize")
+        logger.warning("No data to visualize")
         return {'status': 'skipped', 'message': 'No data available'}
     
     temp_df = df.copy()
@@ -134,7 +136,7 @@ def _post_process_in_out_distribution(df, con, result_dict):
         bucket_name=bucket_name
     )
     
-    print(f"[SUCCESS] Uploaded to {s3_path}")
+    logger.info(f"Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
 
@@ -160,7 +162,8 @@ def GOLD_generate_in_out_distribution(
     Returns:
     - S3 path to the generated HTML chart
     """
-    print("[TASK] Generating in/out distribution (Cloud Run)")
+    logger = get_logger(__name__, context)
+    logger.info("Generating in/out distribution (Cloud Run)")
     
     # Combined SQL query that gets both functional types and trips data
     sql_query = f"""
@@ -253,11 +256,12 @@ def _post_process_functional_type_map(df, con, result_dict):
     
     # Get parameters from environment variables (set by execute_sql_or_cloud_run)
     save_id = os.environ.get('REPORT_SAVE_ID')
+    logger = get_logger(__name__)
     polygon_wkt = os.environ.get('REPORT_POLYGON_WKT')
     bucket_name = os.environ.get('RUSTFS_BUCKET')
     
     if df is None or len(df) == 0:
-        print("[WARNING] No data to visualize")
+        logger.warning("No data to visualize")
         return {'status': 'skipped', 'message': 'No data available'}
     
     input_polygon = wkt.loads(polygon_wkt)
@@ -327,7 +331,7 @@ def _post_process_functional_type_map(df, con, result_dict):
         bucket_name=bucket_name
     )
     
-    print(f"[SUCCESS] Uploaded to {s3_path}")
+    logger.info(f"Uploaded to {s3_path}")
     return {'s3_path': s3_path}
 
 
@@ -353,7 +357,8 @@ def GOLD_generate_functional_type_map(
     Returns:
     - S3 path to the generated HTML map
     """
-    print("[TASK] Generating functional type map (Cloud Run)")
+    logger = get_logger(__name__, context)
+    logger.info("Generating functional type map (Cloud Run)")
     
     sql_query = f"""
         INSTALL spatial; LOAD spatial;

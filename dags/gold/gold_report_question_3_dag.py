@@ -21,6 +21,7 @@ from gold.tasks import (
 )
 from gold.utils import build_dir_name, get_params
 from utils.dag import validate_dates
+from utils.logger import get_logger
 
 
 @task
@@ -51,7 +52,8 @@ def generate_directory(**context):
         bucket_name=bucket_name,
         replace=True
     )
-    print(f"[SUCCESS] Uploaded to s3://{bucket_name}/{s3_key}")
+    logger = get_logger(__name__, context)
+    logger.info(f"Uploaded to s3://{bucket_name}/{s3_key}")
     return directory_name
 
 

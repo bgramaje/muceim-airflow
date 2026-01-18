@@ -5,6 +5,7 @@ Reads directly from URL using DuckDB (lightweight operation, no Cloud Run needed
 
 from airflow.sdk import task
 from typing import Dict, Any
+from utils.logger import get_logger
 
 
 MITMA_INE_RELATIONS_URL = "https://movilidad-opendata.mitma.es/zonificacion/relacion_ine_zonificacionMitma.csv"
@@ -21,7 +22,8 @@ def BRONZE_mitma_ine_relations():
     """
     from utils.utils import get_ducklake_connection
     
-    print(f"[TASK] Loading MITMA-INE relations from: {MITMA_INE_RELATIONS_URL}")
+    logger = get_logger(__name__)
+    logger.info(f"Loading MITMA-INE relations from: {MITMA_INE_RELATIONS_URL}")
     
     con = get_ducklake_connection()
     
@@ -51,8 +53,9 @@ def BRONZE_mitma_ine_relations():
     count_result = con.execute(f"SELECT COUNT(*) as count FROM {TABLE_NAME}").fetchdf()
     record_count = int(count_result['count'].iloc[0])
     
-    print(f"[TASK] Loaded {record_count:,} records into {TABLE_NAME}")
-    print(con.execute(f"SELECT * FROM {TABLE_NAME} LIMIT 5").fetchdf())
+    logger.info(f"Loaded {record_count:,} records into {TABLE_NAME}")
+    sample_df = con.execute(f"SELECT * FROM {TABLE_NAME} LIMIT 5").fetchdf()
+    logger.debug(f"Sample data: {sample_df}")
     
     return {
         'status': 'success',

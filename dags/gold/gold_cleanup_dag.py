@@ -19,6 +19,7 @@ from airflow.models import Param
 from airflow.sdk import Variable
 from airflow.sdk import task, task_group
 from airflow.providers.standard.operators.empty import EmptyOperator
+from utils.logger import get_logger
 
 TABLE_PATTERNS = {
     'typical_day': {
@@ -49,11 +50,12 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     params = context.get('params', {})
     table_type = params.get('table_type', 'all')
     
+    logger = get_logger(__name__, context)
     table_config = TABLE_PATTERNS.get(table_type, TABLE_PATTERNS['all'])
     table_pattern = table_config['pattern']
     
-    print(f"[CLEANUP] Table type: {table_type}")
-    print(f"[CLEANUP] Listing files in bucket '{rustfs_bucket}' for tables matching '{table_pattern}'")
+    logger.info(f"Table type: {table_type}")
+    logger.info(f"Listing files in bucket '{rustfs_bucket}' for tables matching '{table_pattern}'")
     
     con = get_ducklake_connection()
     
@@ -67,7 +69,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     tables_df = con.execute(tables_query).fetchdf()
     table_names = tables_df['table_name'].tolist()
     
-    print(f"[CLEANUP] Found {len(table_names)} matching tables: {table_names}")
+    logger.info(f"Found {len(table_names)} matching tables: {table_names}")
     
     if not table_names:
         return {
@@ -83,7 +85,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
     
     try:
         if not s3_hook.check_for_bucket(rustfs_bucket):
-            print(f"[CLEANUP] Bucket '{rustfs_bucket}' does not exist")
+            logger.warning(f"Bucket '{rustfs_bucket}' does not exist")
             return {
                 'bucket': rustfs_bucket,
                 'files': [],
@@ -93,7 +95,7 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
                 'table_type': table_type
             }
     except Exception as e:
-        print(f"[CLEANUP] Error checking bucket: {e}")
+        logger.error(f"Error checking bucket: {e}", exc_info=True)
         return {
             'bucket': rustfs_bucket,
             'files': [],
@@ -146,10 +148,11 @@ def list_rustfs_files(**context) -> Dict[str, Any]:
             files_by_table[table_name] = len(table_files)
             
         except Exception as e:
-            print(f"[CLEANUP] Error listing files for table '{table_name}': {e}")
+            logger.warning(f"Error listing files for table '{table_name}': {e}")
             files_by_table[table_name] = 0
     
-    print(f"[CLEANUP] Found {len(all_files)} files ({round(total_size / (1024 * 1024), 2)} MB) in {len(table_names)} tables")
+    total_size_mb = round(total_size / (1024 * 1024), 2)
+    logger.info(f"Found {len(all_files)} files ({total_size_mb} MB) in {len(table_names)} tables")
     
     summary = {}
     for f in all_files:
@@ -198,7 +201,8 @@ def delete_rustfs_files(
             'table_type': table_type
         }
     
-    print(f"[CLEANUP] Deleting {total_count} files ({total_size_mb} MB) for table type '{table_type}'")
+    logger = get_logger(__name__, context)
+    logger.info(f"Deleting {total_count} files ({total_size_mb} MB) for table type '{table_type}'")
     
     s3_hook = S3Hook(aws_conn_id='rustfs_s3_conn')
     s3_client = s3_hook.get_conn()
@@ -228,13 +232,13 @@ def delete_rustfs_files(
                     })
             
         except Exception as e:
-            print(f"[CLEANUP] Error deleting batch: {e}")
+            logger.error(f"Error deleting batch {i // batch_size}: {e}", exc_info=True)
             errors.append({'batch': i // batch_size, 'error': str(e)})
     
-    print(f"[CLEANUP] Deleted {deleted}/{total_count} files")
+    logger.info(f"Deleted {deleted}/{total_count} files")
     
     if errors:
-        print(f"[CLEANUP] {len(errors)} errors occurred")
+        logger.warning(f"{len(errors)} errors occurred during deletion")
     
     return {
         'status': 'success' if not errors else 'partial',
@@ -253,11 +257,12 @@ def list_gold_tables(**context) -> Dict[str, Any]:
     params = context.get('params', {})
     table_type = params.get('table_type', 'all')
     
+    logger = get_logger(__name__, context)
     table_config = TABLE_PATTERNS.get(table_type, TABLE_PATTERNS['all'])
     table_pattern = table_config['pattern']
     
-    print(f"[CLEANUP] Table type: {table_type}")
-    print(f"[CLEANUP] Listing tables matching '{table_pattern}'")
+    logger.info(f"Table type: {table_type}")
+    logger.info(f"Listing tables matching '{table_pattern}'")
     
     con = get_ducklake_connection()
     
@@ -271,7 +276,7 @@ def list_gold_tables(**context) -> Dict[str, Any]:
     tables_df = con.execute(tables_query).fetchdf()
     table_names = tables_df['table_name'].tolist()
     
-    print(f"[CLEANUP] Found {len(table_names)} matching tables: {table_names}")
+    logger.info(f"Found {len(table_names)} matching tables: {table_names}")
     
     return {
         'tables': table_names,
@@ -302,18 +307,19 @@ def drop_gold_tables(
             'table_type': table_type
         }
     
+    logger = get_logger(__name__, context)
     table_names = tables if isinstance(tables, list) else []
     drop_statements = [f"DROP TABLE IF EXISTS {table_name};" for table_name in table_names]
     sql_query = "\n".join(drop_statements)
     
-    print(f"DROPPING {len(table_names)} {table_type} tables (complete deletion)")
+    logger.warning(f"⚠️  DROPPING {len(table_names)} {table_type} tables (complete deletion)")
     for t in table_names:
-        print(f"- {t}")
+        logger.warning(f"  - {t}")
     
     try:
         result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
         
-        print(f"Dropped {len(table_names)} tables")
+        logger.info(f"✅ Dropped {len(table_names)} tables")
         
         return {
             'status': 'success',
@@ -325,7 +331,7 @@ def drop_gold_tables(
         }
         
     except Exception as e:
-        print(f"Error dropping tables: {e}")
+        logger.error(f"❌ Error dropping tables: {e}", exc_info=True)
         return {
             'status': 'error',
             'dropped': 0,

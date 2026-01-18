@@ -11,6 +11,7 @@ from typing import List, Dict, Any
 
 from utils.gcp import execute_sql_or_cloud_run
 from utils.utils import get_ducklake_connection
+from utils.logger import get_logger
 
 
 @task
@@ -22,7 +23,8 @@ def GOLD_typical_day_create_table(**context) -> Dict:
     Returns:
     - Dict with status of table creation
     """
-    print("[TASK] Creating gold_typical_day_od_hourly table if it doesn't exist")
+    logger = get_logger(__name__, context)
+    logger.info("Creating gold_typical_day_od_hourly table if it doesn't exist")
     
     con = get_ducklake_connection()
     
@@ -54,9 +56,9 @@ def GOLD_typical_day_create_table(**context) -> Dict:
     # Apply partitioning only if table is new
     if not table_exists:
         con.execute("ALTER TABLE gold_typical_day_od_hourly SET PARTITIONED BY (year(date), month(date), day(date));")
-        print("[TASK] Applied partitioning")
+        logger.info("Applied partitioning")
     
-    print("[TASK] Table gold_typical_day_od_hourly created/verified successfully")
+    logger.info("Table gold_typical_day_od_hourly created/verified successfully")
     
     return {
         "status": "success",
@@ -79,10 +81,11 @@ def GOLD_typical_day_get_date_batches(
     Returns:
     - List of dictionaries with 'fechas' (list of dates) and 'batch_index' for each batch
     """
+    logger = get_logger(__name__, context)
     # Convert batch_size to int if it comes as string from params
     batch_size = int(batch_size) if isinstance(batch_size, str) else batch_size
     
-    print(f"[TASK] Getting unprocessed dates for gold_typical_day_od_hourly (batch_size: {batch_size})")
+    logger.info(f"Getting unprocessed dates for gold_typical_day_od_hourly (batch_size: {batch_size})")
     
     con = get_ducklake_connection()
     
@@ -105,37 +108,35 @@ def GOLD_typical_day_get_date_batches(
         df = con.execute(query).fetchdf()
         
         if df.empty:
-            print("[TASK] No unprocessed dates found")
+            logger.info("No unprocessed dates found")
             return []
         
         fechas = [str(fecha) for fecha in df['fecha'].unique()]
         fechas = sorted(fechas)
         
         if not fechas:
-            print("[TASK] No valid unprocessed dates found")
+            logger.info("No valid unprocessed dates found")
             return []
         
-        print(f"[TASK] Total unprocessed dates: {len(fechas)}")
+        logger.info(f"Total unprocessed dates: {len(fechas)}")
         
         batches = []
         batch_index = 0
         
         for i in range(0, len(fechas), batch_size):
             batch_fechas = fechas[i:i + batch_size]
-            
             batches.append({
                 'batch_index': batch_index,
                 'fechas': batch_fechas
             })
-            
             batch_index += 1
         
-        print(f"[TASK] Created {len(batches)} batches")
+        logger.info(f"Created {len(batches)} batches")
         return batches
         
     except Exception as e:
         # If gold table doesn't exist, get all dates from silver
-        print(f"[TASK] Gold table may not exist, getting all silver dates: {e}")
+        logger.warning(f"Gold table may not exist, getting all silver dates: {e}")
         try:
             df = con.execute("""
                 SELECT DISTINCT strftime(fecha, '%Y%m%d') AS fecha
@@ -155,21 +156,17 @@ def GOLD_typical_day_get_date_batches(
             
             for i in range(0, len(fechas), batch_size):
                 batch_fechas = fechas[i:i + batch_size]
-                
                 batches.append({
                     'batch_index': batch_index,
                     'fechas': batch_fechas
                 })
-                
                 batch_index += 1
             
-            print(f"[TASK] Created {len(batches)} batches from all silver dates")
+            logger.info(f"Created {len(batches)} batches from all silver dates")
             return batches
             
         except Exception as e2:
-            print(f"[TASK] Error getting date batches: {e2}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error getting date batches: {e2}", exc_info=True)
             return []
 
 
@@ -198,10 +195,11 @@ def GOLD_typical_day_process_batch(date_batch: Dict[str, Any], **context) -> Dic
     else:
         raise ValueError(f"Unexpected date_batch type: {type(date_batch)}, value: {date_batch}")
     
+    logger = get_logger(__name__, context)
     if not fechas:
         raise ValueError(f"No fechas found in date_batch: {date_batch}")
     
-    print(f"[TASK] Processing batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
+    logger.info(f"Processing batch {batch_index}: {len(fechas)} dates (from {fechas[0]} to {fechas[-1]})")
     
     # Create list of dates for the query (format: YYYY-MM-DD)
     fechas_formatted = [f"{f[:4]}-{f[4:6]}-{f[6:8]}" for f in fechas]
@@ -248,7 +246,7 @@ def GOLD_typical_day_process_batch(date_batch: Dict[str, Any], **context) -> Dic
     
     result = execute_sql_or_cloud_run(sql_query=sql_query, **context)
     
-    print(f"[TASK] Batch {batch_index} processed successfully: {len(fechas)} dates")
+    logger.info(f"Batch {batch_index} processed successfully: {len(fechas)} dates")
     
     return {
         "status": "success",
